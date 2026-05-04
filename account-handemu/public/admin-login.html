@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>管理后台 - Demu</title>
+  <link rel="stylesheet" href="/css/admin.css" />
+</head>
+<body>
+  <div class="admin-login-wrap">
+    <div class="admin-login-card">
+      <div class="brand">
+        <h2><span>Demu</span> 管理后台</h2>
+        <p>仅限授权管理员登录</p>
+      </div>
+
+      <div id="message" style="padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px;display:none;"></div>
+
+      <form id="loginForm" autocomplete="off">
+        <div class="form-group">
+          <label for="username">管理员账号</label>
+          <input type="text" id="username" placeholder="请输入管理员账号" required autofocus />
+        </div>
+        <div class="form-group">
+          <label for="password">密码</label>
+          <input type="password" id="password" placeholder="请输入密码" required />
+        </div>
+        <button type="submit" class="btn btn-primary" style="width:100%;height:42px;font-size:14px;" id="submitBtn">
+          登 录
+        </button>
+      </form>
+
+      <div style="text-align:center;margin-top:20px;">
+        <a href="/login.html" style="font-size:13px;color:var(--text-secondary);text-decoration:none;">
+          返回用户登录
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const msg = document.getElementById('message');
+    const submitBtn = document.getElementById('submitBtn');
+
+    function showMsg(text, type) {
+      msg.textContent = text;
+      msg.style.display = 'block';
+      msg.style.background = type === 'error' ? '#fef2f2' : '#f0fdf4';
+      msg.style.color = type === 'error' ? '#ef4444' : '#16a34a';
+      msg.style.border = type === 'error' ? '1px solid #fecaca' : '1px solid #bbf7d0';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.style.display = 'none';
+
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+
+      if (!username || !password) { showMsg('请填写完整', 'error'); return; }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = '登录中...';
+
+      try {
+        const res = await fetch('/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          window.location.href = '/admin.html';
+        } else {
+          showMsg(data.message, 'error');
+        }
+      } catch (err) {
+        showMsg('网络错误', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '登 录';
+      }
+    });
+
+    // 如果已登录直接跳转
+    fetch('/api/admin/me', { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => { if (d.success) window.location.href = '/admin.html'; })
+      .catch(() => {});
+  </script>
+</body>
+</html>

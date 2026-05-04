@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>注册 - Demu账号</title>
+  <style>
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    :root {
+      --primary:#2563eb; --primary-hover:#1d4ed8; --primary-light:#dbeafe;
+      --bg:#f1f5f9; --card:#ffffff; --text:#1e293b; --text2:#64748b;
+      --border:#e2e8f0; --error:#ef4444; --success:#22c55e; --warning:#f59e0b;
+    }
+    body {
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+      background:var(--bg); min-height:100vh; display:flex; align-items:center;
+      justify-content:center; padding:24px;
+    }
+    .card {
+      background:var(--card); border-radius:12px;
+      box-shadow:0 4px 24px rgba(0,0,0,0.06);
+      width:100%; max-width:420px; padding:40px 36px;
+    }
+    .brand { text-align:center; margin-bottom:28px; }
+    .brand h2 { font-size:22px; font-weight:700; color:var(--text); }
+    .brand h2 span { color:var(--primary); }
+    .brand p { font-size:13px; color:var(--text2); margin-top:6px; }
+    .tabs {
+      display:flex; border-bottom:2px solid var(--border);
+      margin-bottom:24px;
+    }
+    .tab {
+      flex:1; text-align:center; padding:10px 0; font-size:14px;
+      font-weight:500; color:var(--text2); cursor:pointer;
+      border-bottom:2px solid transparent; margin-bottom:-2px;
+      transition:all 0.2s;
+    }
+    .tab.active { color:var(--primary); border-bottom-color:var(--primary); }
+    .form-group { margin-bottom:18px; }
+    .form-group label {
+      display:block; font-size:13px; font-weight:500;
+      margin-bottom:6px; color:var(--text);
+    }
+    .form-group input {
+      width:100%; height:42px; padding:0 14px; border:1px solid var(--border);
+      border-radius:8px; font-size:14px; outline:none; transition:all 0.2s;
+    }
+    .form-group input:focus {
+      border-color:var(--primary); box-shadow:0 0 0 2px var(--primary-light);
+    }
+    .code-row { display:flex; gap:8px; }
+    .code-row input { flex:1; }
+    .code-row button {
+      width:120px; height:42px; border:1px solid var(--primary);
+      background:#fff; color:var(--primary); border-radius:8px;
+      font-size:13px; cursor:pointer; white-space:nowrap; transition:all 0.2s;
+    }
+    .code-row button:hover { background:var(--primary-light); }
+    .code-row button:disabled { opacity:0.5; cursor:not-allowed; }
+    .hint { font-size:12px; color:var(--text2); margin-top:4px; }
+    .btn {
+      width:100%; height:44px; border:none; border-radius:8px; font-size:14px;
+      font-weight:600; cursor:pointer; transition:all 0.2s;
+    }
+    .btn-primary { background:var(--primary); color:#fff; }
+    .btn-primary:hover { background:var(--primary-hover); }
+    .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .msg {
+      padding:10px 14px; border-radius:8px; font-size:13px;
+      margin-bottom:16px; display:none; line-height:1.5;
+    }
+    .msg.error {
+      background:#fef2f2; color:var(--error);
+      border:1px solid #fecaca; display:block;
+    }
+    .msg.warning {
+      background:#fffbeb; color:#92400e;
+      border:1px solid #fde68a; display:block;
+    }
+    .msg.success {
+      background:#f0fdf4; color:var(--success);
+      border:1px solid #bbf7d0; display:block;
+    }
+    .msg.info {
+      background:#eff6ff; color:#1d4ed8;
+      border:1px solid #bfdbfe; display:block;
+    }
+    .login-link {
+      text-align:center; margin-top:24px; font-size:13px; color:var(--text2);
+    }
+    .login-link a {
+      color:var(--primary); text-decoration:none; font-weight:500;
+    }
+    .login-link a:hover { text-decoration:underline; }
+    .strength-bar {
+      height:4px; border-radius:2px; background:#e2e8f0;
+      margin-top:8px; overflow:hidden;
+    }
+    .strength-bar .fill {
+      height:100%; border-radius:2px; transition:all 0.3s; width:0;
+    }
+    .strength-text { font-size:11px; margin-top:4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <h2><span>Demu</span>账号</h2>
+      <p>一个Demu账号尽享翰德姆全部服务～</p>
+    </div>
+
+    <div id="message" class="msg"></div>
+
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('email')">邮箱注册</div>
+      <div class="tab" onclick="switchTab('phone')">手机号注册</div>
+    </div>
+
+    <form id="registerForm" autocomplete="off">
+      <div class="form-group">
+        <label for="username">用户名</label>
+        <input type="text" id="username"
+          placeholder="3-20位，字母数字下划线" required />
+      </div>
+
+      <!-- 邮箱注册 -->
+      <div id="emailFields">
+        <div class="form-group">
+          <label for="email">邮箱</label>
+          <div class="code-row">
+            <input type="email" id="email" placeholder="请输入邮箱" required />
+            <button type="button" id="sendCodeBtn" onclick="sendEmailCode()">
+              发送验证码
+            </button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="emailCode">邮箱验证码</label>
+          <input type="text" id="emailCode"
+            placeholder="请输入 6 位验证码" maxlength="6" />
+        </div>
+      </div>
+
+      <!-- 手机号注册 -->
+      <div id="phoneFields" style="display:none;">
+        <div class="form-group">
+          <label for="phone">手机号</label>
+          <input type="tel" id="phone" placeholder="请输入手机号" />
+          <div class="hint" id="phoneHint" style="display:none;"></div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="password">密码</label>
+        <input type="password" id="password"
+          placeholder="至少8位，含大小写字母和数字" required
+          oninput="checkStrength()" />
+        <div class="strength-bar"><div class="fill" id="strengthFill"></div></div>
+        <div class="strength-text" id="strengthText"></div>
+      </div>
+
+      <div class="form-group">
+        <label for="confirmPassword">确认密码</label>
+        <input type="password" id="confirmPassword"
+          placeholder="再次输入密码" required />
+      </div>
+
+      <button type="submit" class="btn btn-primary" id="submitBtn">注 册</button>
+    </form>
+
+    <div class="login-link">
+      已有账号？<a href="/login.html">去登录</a>
+    </div>
+  </div>
+
+  <script>
+    var currentTab = 'email';
+    var form = document.getElementById('registerForm');
+    var msg = document.getElementById('message');
+    var submitBtn = document.getElementById('submitBtn');
+    var sendCodeBtn = document.getElementById('sendCodeBtn');
+    var countdown = 0;
+
+    function showMsg(text, type) {
+      msg.innerHTML = text;
+      msg.className = 'msg ' + (type || 'error');
+    }
+
+    function hideMsg() {
+      msg.className = 'msg';
+      msg.innerHTML = '';
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+      hideMsg();
+
+      document.querySelectorAll('.tab').forEach(function(el, i) {
+        el.classList.toggle('active', (i === 0 && tab === 'email') || (i === 1 && tab === 'phone'));
+      });
+      document.getElementById('emailFields').style.display = tab === 'email' ? 'block' : 'none';
+      document.getElementById('phoneFields').style.display = tab === 'phone' ? 'block' : 'none';
+
+      if (tab === 'phone') {
+        document.getElementById('phoneHint').style.display = 'block';
+        document.getElementById('phoneHint').innerHTML =
+          '📱 手机号注册功能即将上线，短信验证码正在开发中。<br>目前请使用邮箱注册。';
+        document.getElementById('phoneHint').style.color = 'var(--warning)';
+      } else {
+        document.getElementById('phoneHint').style.display = 'none';
+      }
+    }
+
+    function checkStrength() {
+      var pwd = document.getElementById('password').value;
+      var score = 0;
+      var fill = document.getElementById('strengthFill');
+      var text = document.getElementById('strengthText');
+
+      if (pwd.length >= 8) score++;
+      if (pwd.length >= 12) score++;
+      if (/[a-z]/.test(pwd)) score++;
+      if (/[A-Z]/.test(pwd)) score++;
+      if (/[0-9]/.test(pwd)) score++;
+      if (/[^a-zA-Z0-9]/.test(pwd)) score++;
+
+      var levels = [
+        { min:0, color:'#e2e8f0', width:'0%', label:'' },
+        { min:1, color:'#ef4444', width:'20%', label:'很弱' },
+        { min:2, color:'#f59e0b', width:'40%', label:'较弱' },
+        { min:3, color:'#f59e0b', width:'60%', label:'一般' },
+        { min:4, color:'#22c55e', width:'80%', label:'较强' },
+        { min:5, color:'#16a34a', width:'100%', label:'很强' }
+      ];
+
+      var level = levels[0];
+      for (var i = levels.length - 1; i >= 0; i--) {
+        if (score >= levels[i].min) { level = levels[i]; break; }
+      }
+
+      fill.style.width = level.width;
+      fill.style.background = level.color;
+      text.textContent = level.label;
+      text.style.color = level.color;
+    }
+
+    async function sendEmailCode() {
+      hideMsg();
+      var email = document.getElementById('email').value.trim();
+      if (!email) { showMsg('请先输入邮箱', 'error'); return; }
+
+      sendCodeBtn.disabled = true;
+      sendCodeBtn.textContent = '发送中...';
+
+      try {
+        var res = await fetch('/api/auth/send-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email })
+        });
+        var data = await res.json();
+
+        if (data.success) {
+          showMsg('验证码已发送到 ' + email + '，请查收', 'success');
+          startCountdown();
+        } else {
+          showMsg(data.message, 'error');
+          sendCodeBtn.disabled = false;
+          sendCodeBtn.textContent = '发送验证码';
+        }
+      } catch (err) {
+        showMsg('网络错误', 'error');
+        sendCodeBtn.disabled = false;
+        sendCodeBtn.textContent = '发送验证码';
+      }
+    }
+
+    function startCountdown() {
+      countdown = 60;
+      sendCodeBtn.disabled = true;
+      var timer = setInterval(function() {
+        countdown--;
+        if (countdown <= 0) {
+          clearInterval(timer);
+          sendCodeBtn.disabled = false;
+          sendCodeBtn.textContent = '发送验证码';
+        } else {
+          sendCodeBtn.textContent = countdown + 's 后重发';
+        }
+      }, 1000);
+    }
+
+    form.addEventListener('submit', async function(e) {
+      e.preventDefault();
+      hideMsg();
+
+      var username = document.getElementById('username').value.trim();
+      var password = document.getElementById('password').value;
+      var confirmPassword = document.getElementById('confirmPassword').value;
+
+      if (!username) { showMsg('请输入用户名', 'error'); return; }
+      if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+        showMsg('用户名为3-20位字母、数字或下划线', 'error'); return;
+      }
+      if (password.length < 8) { showMsg('密码至少8位', 'error'); return; }
+      if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+        showMsg('密码需包含大小写字母和数字', 'error'); return;
+      }
+      if (password !== confirmPassword) {
+        showMsg('两次密码不一致', 'error'); return;
+      }
+
+      if (currentTab === 'phone') {
+        showMsg('手机号注册功能即将上线，请使用邮箱注册', 'info');
+        return;
+      }
+
+      var email = document.getElementById('email').value.trim();
+      var emailCode = document.getElementById('emailCode').value.trim();
+
+      if (!email) { showMsg('请输入邮箱', 'error'); return; }
+      if (!emailCode) { showMsg('请输入验证码', 'error'); return; }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = '注册中...';
+
+      try {
+        var res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: username,
+            email: email,
+            password: password,
+            code: emailCode
+          })
+        });
+        var data = await res.json();
+
+        if (data.success) {
+          showMsg('注册成功！正在跳转到登录页面...', 'success');
+          setTimeout(function() {
+            window.location.href = '/login.html';
+          }, 1500);
+        } else {
+          showMsg(data.message, 'error');
+        }
+      } catch (err) {
+        showMsg('网络错误，请稍后重试', 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '注 册';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>管理后台 - Demu</title>
+  <link rel="stylesheet" href="/css/admin.css" />
+</head>
+<body>
+  <div id="toast" class="toast"></div>
+
+  <div id="modalOverlay" class="modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modalTitle">操作</h3>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer" id="modalFooter"></div>
+    </div>
+  </div>
+
+  <div class="admin-layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand"><span>Demu</span> 后台</div>
+      <nav class="sidebar-nav">
+        <div class="sidebar-section">概览</div>
+        <a class="sidebar-item active" data-page="dashboard" onclick="switchPage('dashboard')">
+          <span class="icon">📊</span> 仪表盘
+        </a>
+        <div class="sidebar-section">用户</div>
+        <a class="sidebar-item" data-page="users" onclick="switchPage('users')">
+          <span class="icon">👥</span> 用户管理
+        </a>
+        <div class="sidebar-section">安全</div>
+        <a class="sidebar-item" data-page="loginLogs" onclick="switchPage('loginLogs')">
+          <span class="icon">📋</span> 登录日志
+        </a>
+        <a class="sidebar-item" data-page="securityLogs" onclick="switchPage('securityLogs')">
+          <span class="icon">🛡️</span> 安全日志
+        </a>
+        <a class="sidebar-item" data-page="ipBans" onclick="switchPage('ipBans')">
+          <span class="icon">🚫</span> IP 封禁
+        </a>
+        <div class="sidebar-section">设置</div>
+        <a class="sidebar-item" data-page="changePwd" onclick="switchPage('changePwd')">
+          <span class="icon">🔑</span> 修改密码
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <button class="sidebar-item" onclick="doLogout()">
+          <span class="icon">🚪</span> 退出登录
+        </button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <div class="topbar">
+        <div class="topbar-title" id="pageTitle">仪表盘</div>
+        <div class="topbar-actions">
+          <span class="topbar-user" id="adminName"></span>
+        </div>
+      </div>
+
+      <!-- 仪表盘 -->
+      <div id="page-dashboard">
+        <div class="stats-grid" id="statsGrid"></div>
+      </div>
+
+      <!-- 用户管理 -->
+      <div id="page-users" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <h3>用户列表</h3>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-success btn-sm" onclick="batchAction('active')">批量激活</button>
+              <button class="btn btn-warning btn-sm" onclick="batchAction('inactive')">批量禁用</button>
+              <button class="btn btn-danger btn-sm" onclick="batchAction('delete')">批量删除</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="toolbar">
+              <input type="text" id="userSearch" placeholder="搜索用户名 / 邮箱 / 手机号" />
+              <select id="userStatusFilter">
+                <option value="">全部状态</option>
+                <option value="active">已激活</option>
+                <option value="inactive">未激活</option>
+              </select>
+              <button class="btn btn-primary btn-sm" onclick="loadUsers(1)">搜索</button>
+              <button class="btn btn-outline btn-sm" onclick="resetUserSearch()">重置</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th class="checkbox-cell"><input type="checkbox" id="checkAll" onchange="toggleCheckAll()" /></th>
+                    <th>ID</th>
+                    <th>用户名</th>
+                    <th>邮箱</th>
+                    <th>手机号</th>
+                    <th>状态</th>
+                    <th>最后登录 IP</th>
+                    <th>注册时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="userTableBody"></tbody>
+              </table>
+            </div>
+            <div class="pagination">
+              <span id="userPaginationInfo"></span>
+              <div class="pagination-btns" id="userPaginationBtns"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 登录日志 -->
+      <div id="page-loginLogs" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>登录日志</h3></div>
+          <div class="card-body">
+            <div class="toolbar">
+              <input type="text" id="logIpSearch" placeholder="搜索 IP" />
+              <select id="logStatusFilter">
+                <option value="">全部</option>
+                <option value="success">成功</option>
+                <option value="fail">失败</option>
+              </select>
+              <button class="btn btn-primary btn-sm" onclick="loadLoginLogs(1)">搜索</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>ID</th><th>用户</th><th>IP</th><th>User-Agent</th><th>状态</th><th>时间</th></tr>
+                </thead>
+                <tbody id="loginLogBody"></tbody>
+              </table>
+            </div>
+            <div class="pagination">
+              <span id="loginLogPaginationInfo"></span>
+              <div class="pagination-btns" id="loginLogPaginationBtns"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 安全日志 -->
+      <div id="page-securityLogs" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>安全日志</h3></div>
+          <div class="card-body">
+            <div class="toolbar">
+              <select id="secLogTypeFilter">
+                <option value="">全部类型</option>
+                <option value="anomalous_login">异地登录</option>
+                <option value="account_locked">账号锁定</option>
+                <option value="ip_banned">IP 封禁</option>
+              </select>
+              <button class="btn btn-primary btn-sm" onclick="loadSecurityLogs(1)">搜索</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>ID</th><th>用户</th><th>类型</th><th>描述</th><th>IP</th><th>时间</th></tr>
+                </thead>
+                <tbody id="secLogBody"></tbody>
+              </table>
+            </div>
+            <div class="pagination">
+              <span id="secLogPaginationInfo"></span>
+              <div class="pagination-btns" id="secLogPaginationBtns"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- IP 封禁 -->
+      <div id="page-ipBans" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>IP 封禁列表</h3></div>
+          <div class="card-body">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>ID</th><th>IP 地址</th><th>原因</th><th>过期时间</th><th>封禁时间</th><th>操作</th></tr>
+                </thead>
+                <tbody id="ipBanBody"></tbody>
+              </table>
+            </div>
+            <div class="pagination">
+              <span id="ipBanPaginationInfo"></span>
+              <div class="pagination-btns" id="ipBanPaginationBtns"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 修改密码 -->
+      <div id="page-changePwd" style="display:none;">
+        <div class="card" style="max-width:480px;">
+          <div class="card-header"><h3>修改管理员密码</h3></div>
+          <div class="card-body">
+            <form id="changePwdForm">
+              <div class="form-group">
+                <label>当前密码</label>
+                <input type="password" id="oldPwd" required />
+              </div>
+              <div class="form-group">
+                <label>新密码</label>
+                <input type="password" id="newPwd" placeholder="至少 8 位，含大小写和数字" required />
+              </div>
+              <div class="form-group">
+                <label>确认新密码</label>
+                <input type="password" id="confirmPwd" required />
+              </div>
+              <button type="submit" class="btn btn-primary">确认修改</button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+  <script>
+    const API = '/api/admin';
+    let currentAdmin = null;
+
+    function esc(s) {
+      if (!s) return '';
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    async function request(url, options = {}) {
+      try {
+        const res = await fetch(API + url, {
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          ...options
+        });
+        const data = await res.json();
+        if (res.status === 401) { window.location.href = '/admin-login.html'; return null; }
+        return data;
+      } catch (e) {
+        showToast('网络错误', 'error');
+        return null;
+      }
+    }
+
+    function showToast(text, type) {
+      const t = document.getElementById('toast');
+      t.textContent = text;
+      t.className = 'toast show ' + (type || 'success');
+      setTimeout(() => { t.className = 'toast'; }, 3000);
+    }
+
+    function fmtTime(str) {
+      if (!str) return '-';
+      const d = new Date(str);
+      const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+
+    function openModal(title, bodyHTML, footerHTML) {
+      document.getElementById('modalTitle').textContent = title;
+      document.getElementById('modalBody').innerHTML = bodyHTML;
+      document.getElementById('modalFooter').innerHTML = footerHTML || '';
+      document.getElementById('modalOverlay').classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('modalOverlay').classList.remove('show');
+    }
+
+    // ============ 页面切换 ============
+    function switchPage(page) {
+      const pages = ['dashboard','users','loginLogs','securityLogs','ipBans','changePwd'];
+      const titles = { dashboard:'仪表盘', users:'用户管理', loginLogs:'登录日志', securityLogs:'安全日志', ipBans:'IP 封禁', changePwd:'修改密码' };
+      pages.forEach(p => {
+        document.getElementById('page-' + p).style.display = p === page ? 'block' : 'none';
+      });
+      document.getElementById('pageTitle').textContent = titles[page] || '';
+      document.querySelectorAll('.sidebar-item[data-page]').forEach(el => {
+        el.classList.toggle('active', el.dataset.page === page);
+      });
+      if (page === 'dashboard') loadDashboard();
+      if (page === 'users') loadUsers(1);
+      if (page === 'loginLogs') loadLoginLogs(1);
+      if (page === 'securityLogs') loadSecurityLogs(1);
+      if (page === 'ipBans') loadIPBans(1);
+    }
+
+    // ============ 通用分页渲染 ============
+    function renderPagination(prefix, pg) {
+      const info = document.getElementById(prefix + 'PaginationInfo');
+      const btns = document.getElementById(prefix + 'PaginationBtns');
+      info.textContent = '共 ' + pg.total + ' 条，第 ' + pg.page + ' / ' + pg.totalPages + ' 页';
+      let html = '';
+      html += '<button ' + (pg.page <= 1 ? 'disabled' : '') + ' onclick="load' + capFirst(prefix) + '(' + (pg.page - 1) + ')">上一页</button>';
+      const start = Math.max(1, pg.page - 2);
+      const end = Math.min(pg.totalPages, pg.page + 2);
+      for (let i = start; i <= end; i++) {
+        html += '<button class="' + (i === pg.page ? 'active' : '') + '" onclick="load' + capFirst(prefix) + '(' + i + ')">' + i + '</button>';
+      }
+      html += '<button ' + (pg.page >= pg.totalPages ? 'disabled' : '') + ' onclick="load' + capFirst(prefix) + '(' + (pg.page + 1) + ')">下一页</button>';
+      btns.innerHTML = html;
+    }
+
+    function capFirst(s) {
+      if (s === 'user') return 'Users';
+      if (s === 'loginLog') return 'LoginLogs';
+      if (s === 'secLog') return 'SecurityLogs';
+      if (s === 'ipBan') return 'IPBans';
+      return s;
+    }
+
+    // ============ 仪表盘 ============
+    async function loadDashboard() {
+      const data = await request('/dashboard');
+      if (!data || !data.success) return;
+      const s = data.data;
+      document.getElementById('statsGrid').innerHTML =
+        '<div class="stat-card"><div class="stat-label">总用户数</div><div class="stat-value">' + s.totalUsers + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">已激活</div><div class="stat-value text-success">' + s.activeUsers + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">未激活</div><div class="stat-value text-warning">' + s.inactiveUsers + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">今日注册</div><div class="stat-value text-primary">' + s.todayRegistered + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">本周注册</div><div class="stat-value">' + s.weekRegistered + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">今日登录成功</div><div class="stat-value text-success">' + s.todayLogins + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">今日登录失败</div><div class="stat-value text-error">' + s.todayFailedLogins + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">今日安全事件</div><div class="stat-value text-warning">' + s.todaySecurityEvents + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">当前 IP 封禁</div><div class="stat-value text-error">' + s.activeBans + '</div></div>';
+    }
+
+    // ============ 用户管理 ============
+    let userPage = 1;
+
+    async function loadUsers(page) {
+      userPage = page || 1;
+      const keyword = document.getElementById('userSearch').value.trim();
+      const status = document.getElementById('userStatusFilter').value;
+      let url = '/users?page=' + userPage + '&pageSize=15';
+      if (keyword) url += '&keyword=' + encodeURIComponent(keyword);
+      if (status) url += '&status=' + status;
+
+      const data = await request(url);
+      if (!data || !data.success) return;
+      const list = data.data.list;
+      const pagination = data.data.pagination;
+      const tbody = document.getElementById('userTableBody');
+
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-secondary);">暂无数据</td></tr>';
+      } else {
+        let html = '';
+        for (let i = 0; i < list.length; i++) {
+          const u = list[i];
+          html += '<tr>' +
+            '<td class="checkbox-cell"><input type="checkbox" class="user-check" value="' + u.id + '" /></td>' +
+            '<td>' + u.id + '</td>' +
+            '<td><strong>' + esc(u.username) + '</strong></td>' +
+            '<td>' + esc(u.email) + '</td>' +
+            '<td>' + (u.phone || '-') + '</td>' +
+            '<td><span class="badge badge-' + u.status + '">' + (u.status === 'active' ? '已激活' : '未激活') + '</span></td>' +
+            '<td>' + (u.last_login_ip || '-') + '</td>' +
+            '<td>' + fmtTime(u.created_at) + '</td>' +
+            '<td>' +
+              '<button class="btn btn-primary btn-sm" onclick="viewUser(' + u.id + ')">详情</button> ' +
+              '<button class="btn btn-outline btn-sm" onclick="editUser(' + u.id + ',\'' + esc(u.username) + '\',\'' + esc(u.email) + '\',\'' + u.status + '\')">编辑</button> ' +
+              '<button class="btn btn-danger btn-sm" onclick="confirmDeleteUser(' + u.id + ',\'' + esc(u.username) + '\')">删除</button>' +
+            '</td></tr>';
+        }
+        tbody.innerHTML = html;
+      }
+      document.getElementById('checkAll').checked = false;
+      renderPagination('user', pagination);
+    }
+
+    function resetUserSearch() {
+      document.getElementById('userSearch').value = '';
+      document.getElementById('userStatusFilter').value = '';
+      loadUsers(1);
+    }
+
+    function toggleCheckAll() {
+      const checked = document.getElementById('checkAll').checked;
+      document.querySelectorAll('.user-check').forEach(function(cb) { cb.checked = checked; });
+    }
+
+    function getCheckedUserIds() {
+      var ids = [];
+      document.querySelectorAll('.user-check:checked').forEach(function(cb) { ids.push(parseInt(cb.value)); });
+      return ids;
+    }
+
+    function batchAction(action) {
+      var ids = getCheckedUserIds();
+      if (ids.length === 0) { showToast('请先勾选用户', 'error'); return; }
+      var actionText = action === 'delete' ? '删除' : (action === 'active' ? '激活' : '禁用');
+      var btnClass = action === 'delete' ? 'btn-danger' : 'btn-primary';
+      openModal(
+        '确认批量' + actionText,
+        '<p>确定要' + actionText + '选中的 <strong>' + ids.length + '</strong> 个用户吗？</p>',
+        '<button class="btn btn-outline" onclick="closeModal()">取消</button> ' +
+        '<button class="btn ' + btnClass + '" onclick="doBatchAction(\'' + action + '\',' + JSON.stringify(ids) + ')">确认' + actionText + '</button>'
+      );
+    }
+
+    async function doBatchAction(action, ids) {
+      closeModal();
+      var data;
+      if (action === 'delete') {
+        data = await request('/users/batch/delete', { method: 'POST', body: JSON.stringify({ userIds: ids }) });
+      } else {
+        data = await request('/users/batch/status', { method: 'POST', body: JSON.stringify({ userIds: ids, status: action }) });
+      }
+      if (data && data.success) { showToast(data.message); loadUsers(userPage); }
+      else { showToast(data ? data.message : '操作失败', 'error'); }
+    }
+
+    async function viewUser(id) {
+      var data = await request('/users/' + id);
+      if (!data || !data.success) return;
+      var u = data.data.user;
+      var logs = data.data.loginLogs;
+
+      var logsHTML = '';
+      if (logs.length > 0) {
+        logsHTML = '<table style="width:100%;font-size:12px;margin-top:12px;"><thead><tr><th>IP</th><th>状态</th><th>时间</th></tr></thead><tbody>';
+        for (var i = 0; i < Math.min(logs.length, 10); i++) {
+          var l = logs[i];
+          logsHTML += '<tr><td>' + l.ip + '</td><td><span class="badge badge-' + l.status + '">' + l.status + '</span></td><td>' + fmtTime(l.created_at) + '</td></tr>';
+        }
+        logsHTML += '</tbody></table>';
+      }
+
+      openModal('用户详情 #' + u.id,
+        '<div class="detail-grid">' +
+          '<div class="detail-item"><div class="detail-label">用户名</div><div class="detail-value">' + esc(u.username) + '</div></div>' +
+          '<div class="detail-item"><div class="detail-label">邮箱</div><div class="detail-value">' + esc(u.email) + '</div></div>' +
+          '<div class="detail-item"><div class="detail-label">手机号</div><div class="detail-value">' + (u.phone || '-') + '</div></div>' +
+          '<div class="detail-item"><div class="detail-label">状态</div><div class="detail-value"><span class="badge badge-' + u.status + '">' + (u.status === 'active' ? '已激活' : '未激活') + '</span></div></div>' +
+          '<div class="detail-item"><div class="detail-label">最后登录 IP</div><div class="detail-value">' + (u.last_login_ip || '-') + '</div></div>' +
+          '<div class="detail-item"><div class="detail-label">注册时间</div><div class="detail-value">' + fmtTime(u.created_at) + '</div></div>' +
+        '</div>' +
+        '<h4 style="margin-top:20px;font-size:14px;">最近登录记录</h4>' +
+        (logsHTML || '<p style="color:var(--text-secondary);font-size:13px;margin-top:8px;">暂无记录</p>'),
+        '<button class="btn btn-outline" onclick="closeModal()">关闭</button>'
+      );
+    }
+
+    function editUser(id, username, email, status) {
+      openModal('编辑用户 #' + id,
+        '<div class="form-group"><label>用户名</label><input type="text" id="editUsername" value="' + username + '" /></div>' +
+        '<div class="form-group"><label>邮箱</label><input type="email" id="editEmail" value="' + email + '" /></div>' +
+        '<div class="form-group"><label>状态</label><select id="editStatus"><option value="active"' + (status === 'active' ? ' selected' : '') + '>已激活</option><option value="inactive"' + (status === 'inactive' ? ' selected' : '') + '>未激活</option></select></div>' +
+        '<div class="form-group"><label>重置密码（留空则不修改）</label><input type="password" id="editPassword" placeholder="输入新密码" /></div>',
+        '<button class="btn btn-outline" onclick="closeModal()">取消</button> <button class="btn btn-primary" onclick="saveUser(' + id + ')">保存</button>'
+      );
+    }
+
+    async function saveUser(id) {
+      var username = document.getElementById('editUsername').value.trim();
+      var email = document.getElementById('editEmail').value.trim();
+      var status = document.getElementById('editStatus').value;
+      var password = document.getElementById('editPassword').value;
+      var hasError = false;
+
+      if (username) {
+        var r = await request('/users/' + id + '/username', { method: 'PUT', body: JSON.stringify({ username: username }) });
+        if (!r || !r.success) { showToast(r ? r.message : '用户名更新失败', 'error'); hasError = true; }
+      }
+      if (email) {
+        var r = await request('/users/' + id + '/email', { method: 'PUT', body: JSON.stringify({ email: email }) });
+        if (!r || !r.success) { showToast(r ? r.message : '邮箱更新失败', 'error'); hasError = true; }
+      }
+      var r = await request('/users/' + id + '/status', { method: 'PUT', body: JSON.stringify({ status: status }) });
+      if (!r || !r.success) { showToast(r ? r.message : '状态更新失败', 'error'); hasError = true; }
+
+      if (password) {
+        var r = await request('/users/' + id + '/password', { method: 'PUT', body: JSON.stringify({ password: password }) });
+        if (!r || !r.success) { showToast(r ? r.message : '密码重置失败', 'error'); hasError = true; }
+      }
+      if (!hasError) showToast('保存成功');
+      closeModal();
+      loadUsers(userPage);
+    }
+
+    function confirmDeleteUser(id, username) {
+      openModal('确认删除',
+        '<p>确定要删除用户 <strong>' + esc(username) + '</strong> 吗？</p>' +
+        '<p style="color:var(--error);font-size:13px;margin-top:8px;">此操作不可恢复。</p>',
+        '<button class="btn btn-outline" onclick="closeModal()">取消</button> <button class="btn btn-danger" onclick="doDeleteUser(' + id + ')">确认删除</button>'
+      );
+    }
+
+    async function doDeleteUser(id) {
+      closeModal();
+      var data = await request('/users/' + id, { method: 'DELETE' });
+      if (data && data.success) { showToast('用户已删除'); loadUsers(userPage); }
+      else { showToast(data ? data.message : '删除失败', 'error'); }
+    }
+
+    // ============ 登录日志 ============
+    let loginLogPage = 1;
+
+    async function loadLoginLogs(page) {
+      loginLogPage = page || 1;
+      var ip = document.getElementById('logIpSearch').value.trim();
+      var status = document.getElementById('logStatusFilter').value;
+      var url = '/logs/login?page=' + loginLogPage + '&pageSize=20';
+      if (ip) url += '&ip=' + encodeURIComponent(ip);
+      if (status) url += '&status=' + status;
+
+      var data = await request(url);
+      if (!data || !data.success) return;
+      var list = data.data.list;
+      var tbody = document.getElementById('loginLogBody');
+
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-secondary);">暂无数据</td></tr>';
+      } else {
+        var html = '';
+        for (var i = 0; i < list.length; i++) {
+          var l = list[i];
+          html += '<tr><td>' + l.id + '</td><td>' + (l.username || '-') + '</td><td>' + l.ip + '</td>' +
+            '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(l.user_agent || '') + '">' + esc(l.user_agent || '-') + '</td>' +
+            '<td><span class="badge badge-' + l.status + '">' + l.status + '</span></td>' +
+            '<td>' + fmtTime(l.created_at) + '</td></tr>';
+        }
+        tbody.innerHTML = html;
+      }
+      renderPagination('loginLog', data.data.pagination);
+    }
+
+    // ============ 安全日志 ============
+    let secLogPage = 1;
+
+    async function loadSecurityLogs(page) {
+      secLogPage = page || 1;
+      var type = document.getElementById('secLogTypeFilter').value;
+      var url = '/logs/security?page=' + secLogPage + '&pageSize=20';
+      if (type) url += '&type=' + encodeURIComponent(type);
+
+      var data = await request(url);
+      if (!data || !data.success) return;
+      var list = data.data.list;
+      var tbody = document.getElementById('secLogBody');
+
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-secondary);">暂无数据</td></tr>';
+      } else {
+        var html = '';
+        for (var i = 0; i < list.length; i++) {
+          var l = list[i];
+          html += '<tr><td>' + l.id + '</td><td>' + (l.username || '-') + '</td><td>' + l.type + '</td>' +
+            '<td style="max-width:300px;">' + esc(l.description || '-') + '</td>' +
+            '<td>' + (l.ip || '-') + '</td><td>' + fmtTime(l.created_at) + '</td></tr>';
+        }
+        tbody.innerHTML = html;
+      }
+      renderPagination('secLog', data.data.pagination);
+    }
+
+    // ============ IP 封禁 ============
+    let ipBanPage = 1;
+
+    async function loadIPBans(page) {
+      ipBanPage = page || 1;
+      var data = await request('/ip-bans?page=' + ipBanPage + '&pageSize=20');
+      if (!data || !data.success) return;
+      var list = data.data.list;
+      var tbody = document.getElementById('ipBanBody');
+
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-secondary);">暂无封禁记录</td></tr>';
+      } else {
+        var html = '';
+        for (var i = 0; i < list.length; i++) {
+          var b = list[i];
+          var expired = new Date(b.expires_at) < new Date();
+          html += '<tr style="' + (expired ? 'opacity:0.5;' : '') + '">' +
+            '<td>' + b.id + '</td><td><strong>' + b.ip + '</strong></td>' +
+            '<td>' + (b.reason || '-') + '</td>' +
+            '<td>' + fmtTime(b.expires_at) + (expired ? ' <span class="badge badge-inactive">已过期</span>' : '') + '</td>' +
+            '<td>' + fmtTime(b.created_at) + '</td>' +
+            '<td><button class="btn btn-warning btn-sm" onclick="confirmRemoveBan(' + b.id + ',\'' + b.ip + '\')">解除</button></td></tr>';
+        }
+        tbody.innerHTML = html;
+      }
+      renderPagination('ipBan', data.data.pagination);
+    }
+
+    function confirmRemoveBan(id, ip) {
+      openModal('解除封禁',
+        '<p>确定要解除对 <strong>' + ip + '</strong> 的封禁吗？</p>',
+        '<button class="btn btn-outline" onclick="closeModal()">取消</button> <button class="btn btn-warning" onclick="doRemoveBan(' + id + ')">确认解除</button>'
+      );
+    }
+
+    async function doRemoveBan(id) {
+      closeModal();
+      var data = await request('/ip-bans/' + id, { method: 'DELETE' });
+      if (data && data.success) { showToast('已解除封禁'); loadIPBans(ipBanPage); }
+      else { showToast(data ? data.message : '操作失败', 'error'); }
+    }
+
+    // ============ 修改密码 ============
+    document.getElementById('changePwdForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      var oldPwd = document.getElementById('oldPwd').value;
+      var newPwd = document.getElementById('newPwd').value;
+      var confirmPwd = document.getElementById('confirmPwd').value;
+
+      if (newPwd !== confirmPwd) { showToast('两次密码不一致', 'error'); return; }
+      if (newPwd.length < 8) { showToast('密码至少 8 位', 'error'); return; }
+
+      var data = await request('/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ oldPassword: oldPwd, newPassword: newPwd })
+      });
+      if (data && data.success) {
+        showToast('密码修改成功，请重新登录');
+        setTimeout(function() { window.location.href = '/admin-login.html'; }, 1500);
+      } else {
+        showToast(data ? data.message : '修改失败', 'error');
+      }
+    });
+
+    // ============ 退出 ============
+    async function doLogout() {
+      await request('/logout', { method: 'POST' });
+      window.location.href = '/admin-login.html';
+    }
+
+    // ============ 初始化 ============
+    async function init() {
+      var data = await request('/me');
+      if (!data || !data.success) { window.location.href = '/admin-login.html'; return; }
+      currentAdmin = data.data;
+      document.getElementById('adminName').textContent = currentAdmin.username + ' (' + currentAdmin.role + ')';
+      loadDashboard();
+    }
+
+    init();
+  </script>
+</body>
+</html>

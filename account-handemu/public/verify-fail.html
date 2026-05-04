@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>验证失败 - Demu 账号</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="auth-card" style="text-align:center;">
+    <div class="brand">
+      <div class="brand-logo"><span>Demu</span> 账号</div>
+      <div class="brand-slogan">一个 Demu 账号，畅享全部服务</div>
+    </div>
+
+    <div class="result-icon">❌</div>
+    <div class="result-title">验证失败</div>
+    <div class="result-desc" id="reason">验证链接无效或已过期</div>
+
+    <a href="/register.html" class="btn btn-primary" style="text-decoration:none; display:flex; align-items:center; justify-content:center;">
+      重新注册
+    </a>
+
+    <div class="form-footer" style="margin-top:16px;">
+      已有账号？<a href="/login.html">立即登录</a>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const reason = params.get('reason');
+    const el = document.getElementById('reason');
+
+    const reasonMap = {
+      missing_token: '验证链接缺少必要参数',
+      invalid_token: '验证链接无效，请确认链接是否正确',
+      expired: '验证链接已过期，请重新注册获取新的验证邮件'
+    };
+
+    if (reason && reasonMap[reason]) {
+      el.textContent = reasonMap[reason];
+    }
+  </script>
+</body>
+</html>
