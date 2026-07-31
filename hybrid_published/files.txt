@@ -7,7 +7,6 @@ archive_summary.txt
 artifact_name.txt
 author_image_comments.json
 collector.exitcode
-collector.log
 download_results.json
 files.txt
 run_id.txt
