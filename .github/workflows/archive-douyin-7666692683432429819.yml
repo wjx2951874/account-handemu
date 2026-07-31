@@ -7,18 +7,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   PYTHONUNBUFFERED: "1"
 
 jobs:
   archive:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - name: Checkout temporary branch
         uses: actions/checkout@v4
+        with:
+          ref: archive/douyin-7666692683432429819
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,3 +55,41 @@ jobs:
           path: douyin_output/
           if-no-files-found: warn
           retention-days: 3
+
+      - name: Publish downloadable archive chunks to temporary branch
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf published
+          mkdir -p published
+
+          if compgen -G 'artifact/*.zip' > /dev/null; then
+            ARCHIVE="$(find artifact -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+          else
+            ARCHIVE="artifact/001_抓取受限_诊断资料_7666692683432429819.zip"
+            mkdir -p artifact
+            python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          src = Path('douyin_output')
+          dst = Path('artifact/001_抓取受限_诊断资料_7666692683432429819.zip')
+          with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+              if src.exists():
+                  for p in src.rglob('*'):
+                      if p.is_file():
+                          zf.write(p, p.relative_to(src.parent))
+          PY
+          fi
+
+          basename "$ARCHIVE" > published/archive_name.txt
+          sha256sum "$ARCHIVE" | awk '{print $1}' > published/archive_sha256.txt
+          stat -c '%s' "$ARCHIVE" > published/archive_size.txt
+          split -b 45M -d -a 3 "$ARCHIVE" published/archive.part.
+          find published -maxdepth 1 -type f -printf '%f\n' | sort > published/files.txt
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f published
+          git commit -m 'archive: publish Douyin 7666692683432429819 result' || exit 0
+          git push origin HEAD:archive/douyin-7666692683432429819
