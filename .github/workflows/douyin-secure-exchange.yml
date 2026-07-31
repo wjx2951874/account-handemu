@@ -1,0 +1,99 @@
+name: Secure Douyin exchange
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/douyin-bootstrap-marker'
+
+permissions:
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout temporary branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Publish ephemeral public key
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .douyin_exchange "$RUNNER_TEMP/douyin"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin/private.pem" -pubout -out .douyin_exchange/public_key.pem
+          printf '%s\n' '${{ github.run_id }}' > .douyin_exchange/run_id.txt
+          git rm -f .github/douyin-bootstrap-marker
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_exchange
+          git commit -m "Publish ephemeral Douyin exchange key"
+          git push origin "HEAD:${HEAD_REF}"
+
+      - name: Wait for encrypted payload
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          found=0
+          for i in $(seq 1 120); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_exchange/payload.json" > "$RUNNER_TEMP/douyin/payload.json" 2>/dev/null; then
+              found=1
+              break
+            fi
+            sleep 5
+          done
+          test "$found" = 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install cryptography requests playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Decrypt authorized login request
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin'
+          obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-7666692683432429819')
+          Path('.private/douyin_login_curl.txt').write_bytes(plain)
+          PY
+
+      - name: Capture comments and author images
+        run: python tools/douyin_secure_capture.py
+
+      - name: Remove plaintext credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin/private.pem" "$RUNNER_TEMP/douyin/payload.json"
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-secure-result-7666692683432429819
+          path: |
+            douyin_login_result_7666692683432429819.zip
+            douyin_result/
+            douyin_run/
+          if-no-files-found: warn
+          retention-days: 3
