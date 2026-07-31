@@ -1,0 +1,1 @@
+Strict author UID matching and full reply pagination enabled.
