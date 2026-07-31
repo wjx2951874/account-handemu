@@ -1,0 +1,99 @@
+name: Secure signed Douyin replies
+
+on:
+  push:
+    branches:
+      - archive/douyin-7666692683432429819-secure-20260731
+    paths:
+      - .github/workflows/douyin-signed-replies.yml
+
+permissions:
+  contents: write
+
+env:
+  TARGET_BRANCH: archive/douyin-7666692683432429819-secure-20260731
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  replies:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive/douyin-7666692683432429819-secure-20260731
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate reply-run public key
+        run: |
+          python -m pip install --quiet cryptography
+          mkdir -p handshake
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+          rid=os.environ['GITHUB_RUN_ID']; key=rsa.generate_private_key(public_exponent=65537,key_size=3072)
+          Path('/tmp/reply-private.pem').write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()))
+          Path(f'handshake/reply-public-{rid}.pem').write_bytes(key.public_key().public_bytes(serialization.Encoding.PEM,serialization.PublicFormat.SubjectPublicKeyInfo))
+          Path('handshake/reply_latest_run_id.txt').write_text(rid+'\n',encoding='utf-8')
+          PY
+      - name: Publish reply-run public key
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add handshake/reply_latest_run_id.txt "handshake/reply-public-${GITHUB_RUN_ID}.pem"
+          git commit -m "archive: publish reply-run key ${GITHUB_RUN_ID}"
+          git push origin HEAD:${TARGET_BRANCH}
+      - name: Wait for encrypted login
+        run: |
+          set -euo pipefail
+          target="handshake/reply-login-${GITHUB_RUN_ID}.enc.json"; found=0
+          for i in $(seq 1 150); do
+            git fetch --quiet origin "${TARGET_BRANCH}"
+            if git show "origin/${TARGET_BRANCH}:${target}" >/tmp/reply-login.enc.json 2>/dev/null; then found=1; break; fi
+            sleep 4
+          done
+          test "$found" = 1
+      - name: Decrypt login in memory
+        run: |
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          e=json.loads(Path('/tmp/reply-login.enc.json').read_text('utf-8'))
+          k=serialization.load_pem_private_key(Path('/tmp/reply-private.pem').read_bytes(),password=None)
+          aes=k.decrypt(base64.b64decode(e['encrypted_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          raw=AESGCM(aes).decrypt(base64.b64decode(e['nonce']),base64.b64decode(e['ciphertext']),b'douyin-signed-replies-7666692683432429819')
+          Path('/tmp/reply-login.json').write_bytes(raw); os.chmod('/tmp/reply-login.json',0o600)
+          obj=json.loads(raw); assert 'sessionid=' in obj.get('cookie','')
+          print('encrypted login validated')
+          PY
+      - name: Install signed API client
+        run: |
+          git clone --quiet https://github.com/jiji262/douyin-downloader.git vendor
+          cd vendor && git checkout --quiet 1d23957796cafe934890a165a389bb22157e5630 && cd ..
+          python -m pip install --upgrade pip
+          python -m pip install -r vendor/requirements.txt requests
+      - name: Fetch all signed replies
+        env:
+          LOGIN_JSON: /tmp/reply-login.json
+        run: python tools/fetch_signed_replies.py
+      - name: Erase login material
+        if: always()
+        run: rm -f /tmp/reply-login.json /tmp/reply-login.enc.json /tmp/reply-private.pem
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: douyin-signed-replies-7666692683432429819
+          path: |
+            douyin-signed-replies-7666692683432429819.zip
+            reply_out/抓取统计.json
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 0
