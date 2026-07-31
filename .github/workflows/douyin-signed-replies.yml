@@ -61,7 +61,7 @@ jobs:
       - name: Decrypt login in memory
         run: |
           python - <<'PY'
-          import base64,json,os
+          import base64,gzip,json,os
           from pathlib import Path
           from cryptography.hazmat.primitives import hashes,serialization
           from cryptography.hazmat.primitives.asymmetric import padding
@@ -69,10 +69,11 @@ jobs:
           e=json.loads(Path('/tmp/reply-login.enc.json').read_text('utf-8'))
           k=serialization.load_pem_private_key(Path('/tmp/reply-private.pem').read_bytes(),password=None)
           aes=k.decrypt(base64.b64decode(e['encrypted_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
-          raw=AESGCM(aes).decrypt(base64.b64decode(e['nonce']),base64.b64decode(e['ciphertext']),b'douyin-signed-replies-7666692683432429819')
+          packed=AESGCM(aes).decrypt(base64.b64decode(e['nonce']),base64.b64decode(e['ciphertext']),b'douyin-signed-replies-gzip-7666692683432429819')
+          raw=gzip.decompress(packed)
           Path('/tmp/reply-login.json').write_bytes(raw); os.chmod('/tmp/reply-login.json',0o600)
           obj=json.loads(raw); assert 'sessionid=' in obj.get('cookie','')
-          print('encrypted login validated')
+          print('compressed encrypted login validated')
           PY
       - name: Install signed API client
         run: |
