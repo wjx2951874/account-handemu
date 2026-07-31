@@ -1,0 +1,76 @@
+name: Browser reply expander archive
+
+on:
+  push:
+    branches: [archive/douyin-7666692683432429819]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive/douyin-7666692683432429819
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install browser collector
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Expand replies and build archive
+        run: |
+          mkdir -p browser_reply_output/诊断
+          set +e
+          python tools/archive_douyin_browser_replies.py 2>&1 | tee browser_reply_output/诊断/collector.log
+          echo "${PIPESTATUS[0]}" > browser_reply_output/诊断/collector.exitcode
+          exit 0
+      - name: Ensure archive exists
+        run: |
+          if compgen -G 'browser_reply_artifact/*.zip' > /dev/null; then exit 0; fi
+          mkdir -p browser_reply_artifact
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          src = Path('browser_reply_output')
+          dst = Path('browser_reply_artifact/001_浏览器回复抓取诊断资料_7666692683432429819.zip')
+          with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+              for p in src.rglob('*'):
+                  if p.is_file(): zf.write(p, p.relative_to(src.parent))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: douyin-browser-replies-7666692683432429819
+          path: browser_reply_artifact/*.zip
+          retention-days: 7
+          compression-level: 0
+      - name: Publish browser result metadata
+        run: |
+          rm -rf browser_published
+          mkdir -p browser_published
+          A="$(find browser_reply_artifact -type f -name '*.zip' | head -n1)"
+          basename "$A" > browser_published/archive_name.txt
+          sha256sum "$A" | awk '{print $1}' > browser_published/archive_sha256.txt
+          stat -c '%s' "$A" > browser_published/archive_size.txt
+          echo "$GITHUB_RUN_ID" > browser_published/run_id.txt
+          echo 'douyin-browser-replies-7666692683432429819' > browser_published/artifact_name.txt
+          cp browser_reply_output/诊断/collector.log browser_published/collector.log 2>/dev/null || true
+          cp browser_reply_output/诊断/collector.exitcode browser_published/collector.exitcode 2>/dev/null || true
+          cp browser_reply_output/000_存档说明.txt browser_published/archive_summary.txt 2>/dev/null || true
+          cp browser_reply_output/作者图片评论清单.json browser_published/author_image_comments.json 2>/dev/null || true
+          cp browser_reply_output/诊断/回复接口响应清单.json browser_published/reply_responses.json 2>/dev/null || true
+          cp browser_reply_output/诊断/展开按钮点击记录.json browser_published/click_log.json 2>/dev/null || true
+          split -b 45M -d -a 3 "$A" browser_published/archive.part.
+          find browser_published -maxdepth 1 -type f -printf '%f\n' | sort > browser_published/files.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f browser_published
+          git commit -m 'archive: publish browser reply result' || exit 0
+          git push origin HEAD:archive/douyin-7666692683432429819
