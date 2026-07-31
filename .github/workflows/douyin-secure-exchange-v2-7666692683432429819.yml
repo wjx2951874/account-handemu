@@ -1,0 +1,96 @@
+name: Douyin secure exchange v2 7666692683432429819
+
+on:
+  push:
+    branches:
+      - archive/douyin-secure-v2-7666692683432429819-20260731
+    paths:
+      - tools/dygrab_secure_v2.py
+      - .github/workflows/douyin-secure-exchange-v2-7666692683432429819.yml
+
+permissions:
+  contents: write
+
+env:
+  TARGET_BRANCH: archive/douyin-secure-v2-7666692683432429819-20260731
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive/douyin-secure-v2-7666692683432429819-20260731
+          fetch-depth: 0
+
+      - name: Generate one-time encryption certificate
+        run: |
+          set -euo pipefail
+          mkdir -p exchange-v2
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /tmp/douyin-private-v2.pem
+          openssl req -new -x509 -key /tmp/douyin-private-v2.pem -out exchange-v2/public_cert.pem -days 1 -subj '/CN=douyin-one-time-exchange-v2'
+          printf '%s\n' "$GITHUB_RUN_ID" > exchange-v2/run_id.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add exchange-v2/public_cert.pem exchange-v2/run_id.txt
+          git commit -m 'Publish one-time Douyin v2 certificate [skip ci]'
+          git push origin HEAD:"$TARGET_BRANCH"
+
+      - name: Wait for encrypted login payload
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            git fetch origin "$TARGET_BRANCH"
+            git reset --hard "origin/$TARGET_BRANCH"
+            if [ -s exchange-v2/login.cms.b64 ]; then
+              exit 0
+            fi
+            sleep 4
+          done
+          echo 'Encrypted payload was not received' >&2
+          exit 1
+
+      - name: Decrypt login payload
+        run: |
+          set -euo pipefail
+          base64 -d exchange-v2/login.cms.b64 > /tmp/douyin-login-v2.cms
+          openssl cms -decrypt -binary -inform DER -in /tmp/douyin-login-v2.cms -recip exchange-v2/public_cert.pem -inkey /tmp/douyin-private-v2.pem -out /tmp/douyin-login-v2.json
+          chmod 600 /tmp/douyin-login-v2.json
+          python - <<'PY'
+          import json
+          p='/tmp/douyin-login-v2.json'
+          x=json.load(open(p,encoding='utf-8'))
+          assert x.get('cookie') and x.get('user_agent') and x.get('aweme_id')=='7666692683432429819'
+          PY
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install browser dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright requests
+          python -m playwright install --with-deps chromium
+
+      - name: Capture full comments and author images
+        env:
+          LOGIN_JSON: /tmp/douyin-login-v2.json
+        run: python tools/dygrab_secure_v2.py
+
+      - name: Remove temporary secrets
+        if: always()
+        run: rm -f /tmp/douyin-private-v2.pem /tmp/douyin-login-v2.cms /tmp/douyin-login-v2.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: douyin-secure-v2-comments-7666692683432429819
+          path: |
+            douyin-login-comments-7666692683432429819.zip
+            out/抓取统计.json
+            out/评论面板起始.png
+            out/抓取结束.png
+          if-no-files-found: warn
+          retention-days: 1
