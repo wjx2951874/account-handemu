@@ -1,0 +1,54 @@
+name: Archive public Douyin 7666692683432429819
+
+on:
+  push:
+    branches:
+      - archive/douyin-7666692683432429819
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout temporary branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install collector dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests playwright yt-dlp
+          python -m playwright install --with-deps chromium
+
+      - name: Collect public work and author image comments
+        run: python tools/archive_douyin_public.py
+
+      - name: Upload final archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-archive-7666692683432429819
+          path: artifact/*.zip
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-archive-debug-7666692683432429819
+          path: douyin_output/
+          if-no-files-found: warn
+          retention-days: 3
