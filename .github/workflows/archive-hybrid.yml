@@ -33,7 +33,7 @@ jobs:
         run: |
           mkdir -p hybrid_output/诊断
           set +e
-          python tools/archive_douyin_hybrid.py 2>&1 | tee hybrid_output/诊断/collector.log
+          python tools/archive_douyin_hybrid_v2.py 2>&1 | tee hybrid_output/诊断/collector.log
           echo "${PIPESTATUS[0]}" > hybrid_output/诊断/collector.exitcode
           exit 0
       - name: Ensure archive exists
@@ -70,12 +70,11 @@ jobs:
           cp hybrid_output/000_存档说明.txt hybrid_published/archive_summary.txt 2>/dev/null || true
           cp hybrid_output/作者图片评论清单.json hybrid_published/author_image_comments.json 2>/dev/null || true
           cp hybrid_output/下载结果.json hybrid_published/download_results.json 2>/dev/null || true
-          cp hybrid_output/诊断/签名接口分页诊断.json hybrid_published/api_diagnostics.json 2>/dev/null || true
-          cp hybrid_output/诊断/评论接口错误.txt hybrid_published/comment_api_error.txt 2>/dev/null || true
+          cp hybrid_output/诊断/评论分页诊断.json hybrid_published/api_diagnostics.json 2>/dev/null || true
           split -b 45M -d -a 3 "$A" hybrid_published/archive.part.
           find hybrid_published -maxdepth 1 -type f -printf '%f\n' | sort > hybrid_published/files.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -f hybrid_published
-          git commit -m 'archive: publish result' || exit 0
+          git commit -m 'archive: publish strict result' || exit 0
           git push origin HEAD:archive/douyin-7666692683432429819-hybrid
