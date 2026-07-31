@@ -1,0 +1,53 @@
+name: Relay existing Douyin archive 7666692683432429819
+
+on:
+  push:
+    branches:
+      - archive/douyin-7666692683432429819
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  relay:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout temporary branch
+        uses: actions/checkout@v4
+        with:
+          ref: archive/douyin-7666692683432429819
+
+      - name: Reassemble existing archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p relay_artifact relay_published
+          ARCHIVE_NAME="$(cat published/archive_name.txt)"
+          cat published/archive.part.* > "relay_artifact/$ARCHIVE_NAME"
+          echo "$ARCHIVE_NAME" > relay_published/archive_name.txt
+          sha256sum "relay_artifact/$ARCHIVE_NAME" | awk '{print $1}' > relay_published/archive_sha256.txt
+          stat -c '%s' "relay_artifact/$ARCHIVE_NAME" > relay_published/archive_size.txt
+          printf '%s\n' "$GITHUB_RUN_ID" > relay_published/run_id.txt
+          printf '%s\n' 'douyin-relay-existing-7666692683432429819' > relay_published/artifact_name.txt
+
+      - name: Upload relay archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-relay-existing-7666692683432429819
+          path: relay_artifact/*.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Publish relay metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f relay_published
+          git commit -m 'archive: publish relay metadata 7666692683432429819' || exit 0
+          git push origin HEAD:archive/douyin-7666692683432429819
