@@ -2,4 +2,12 @@ archive.part.000
 archive_name.txt
 archive_sha256.txt
 archive_size.txt
+archive_summary.txt
+author_image_comments.json
+browser_errors.json
+collector.exitcode
+collector.log
+download_results.json
 files.txt
+network_urls.json
+requests_probe.json
