@@ -1,0 +1,81 @@
+name: Archive collector
+
+on:
+  push:
+    branches: [archive/douyin-7666692683432429819-hybrid]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive/douyin-7666692683432429819-hybrid
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare dependencies
+        run: |
+          mkdir -p vendor
+          git clone --filter=blob:none --no-checkout https://github.com/jiji262/douyin-downloader.git vendor/douyin-downloader
+          cd vendor/douyin-downloader
+          git checkout 1d23957796cafe934890a165a389bb22157e5630
+          cd ../..
+          python -m pip install --upgrade pip
+          python -m pip install -r vendor/douyin-downloader/requirements.txt requests
+      - name: Run collector
+        run: |
+          mkdir -p hybrid_output/诊断
+          set +e
+          python tools/archive_douyin_hybrid.py 2>&1 | tee hybrid_output/诊断/collector.log
+          echo "${PIPESTATUS[0]}" > hybrid_output/诊断/collector.exitcode
+          exit 0
+      - name: Ensure archive exists
+        run: |
+          if compgen -G 'hybrid_artifact/*.zip' > /dev/null; then exit 0; fi
+          mkdir -p hybrid_artifact
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          src = Path('hybrid_output')
+          dst = Path('hybrid_artifact/001_诊断资料_7666692683432429819.zip')
+          with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+              for p in src.rglob('*'):
+                  if p.is_file(): zf.write(p, p.relative_to(src.parent))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hybrid-archive-7666692683432429819
+          path: hybrid_artifact/*.zip
+          retention-days: 7
+          compression-level: 0
+      - name: Publish metadata
+        run: |
+          rm -rf hybrid_published
+          mkdir -p hybrid_published
+          A="$(find hybrid_artifact -type f -name '*.zip' | head -n1)"
+          basename "$A" > hybrid_published/archive_name.txt
+          sha256sum "$A" | awk '{print $1}' > hybrid_published/archive_sha256.txt
+          stat -c '%s' "$A" > hybrid_published/archive_size.txt
+          echo "$GITHUB_RUN_ID" > hybrid_published/run_id.txt
+          echo 'douyin-hybrid-archive-7666692683432429819' > hybrid_published/artifact_name.txt
+          cp hybrid_output/诊断/collector.log hybrid_published/collector.log 2>/dev/null || true
+          cp hybrid_output/诊断/collector.exitcode hybrid_published/collector.exitcode 2>/dev/null || true
+          cp hybrid_output/000_存档说明.txt hybrid_published/archive_summary.txt 2>/dev/null || true
+          cp hybrid_output/作者图片评论清单.json hybrid_published/author_image_comments.json 2>/dev/null || true
+          cp hybrid_output/下载结果.json hybrid_published/download_results.json 2>/dev/null || true
+          cp hybrid_output/诊断/签名接口分页诊断.json hybrid_published/api_diagnostics.json 2>/dev/null || true
+          cp hybrid_output/诊断/评论接口错误.txt hybrid_published/comment_api_error.txt 2>/dev/null || true
+          split -b 45M -d -a 3 "$A" hybrid_published/archive.part.
+          find hybrid_published -maxdepth 1 -type f -printf '%f\n' | sort > hybrid_published/files.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f hybrid_published
+          git commit -m 'archive: publish result' || exit 0
+          git push origin HEAD:archive/douyin-7666692683432429819-hybrid
