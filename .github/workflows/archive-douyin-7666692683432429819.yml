@@ -27,7 +27,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: Install collector dependencies
         run: |
@@ -36,7 +35,15 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Collect public work and author image comments
-        run: python tools/archive_douyin_public.py
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p douyin_output/debug
+          set +e
+          python tools/archive_douyin_public.py 2>&1 | tee douyin_output/debug/collector.log
+          rc=${PIPESTATUS[0]}
+          echo "$rc" > douyin_output/debug/collector.exitcode
+          exit 0
 
       - name: Upload final archive
         if: always()
@@ -86,6 +93,16 @@ jobs:
           sha256sum "$ARCHIVE" | awk '{print $1}' > published/archive_sha256.txt
           stat -c '%s' "$ARCHIVE" > published/archive_size.txt
           split -b 45M -d -a 3 "$ARCHIVE" published/archive.part.
+
+          cp douyin_output/debug/collector.log published/collector.log 2>/dev/null || true
+          cp douyin_output/debug/collector.exitcode published/collector.exitcode 2>/dev/null || true
+          cp douyin_output/debug/browser_errors.json published/browser_errors.json 2>/dev/null || true
+          cp douyin_output/raw/requests_probe.json published/requests_probe.json 2>/dev/null || true
+          cp douyin_output/raw/network_urls.json published/network_urls.json 2>/dev/null || true
+          cp douyin_output/000_存档说明.txt published/archive_summary.txt 2>/dev/null || true
+          cp douyin_output/作者图片评论清单.json published/author_image_comments.json 2>/dev/null || true
+          cp douyin_output/下载结果.json published/download_results.json 2>/dev/null || true
+
           find published -maxdepth 1 -type f -printf '%f\n' | sort > published/files.txt
 
           git config user.name 'github-actions[bot]'
