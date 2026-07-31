@@ -1,0 +1,81 @@
+name: Douyin direct API v4 7666692683432429819
+
+on:
+  push:
+    branches:
+      - archive/douyin-api-v4-7666692683432429819-20260731
+    paths:
+      - tools/dyapi_v4.py
+      - .github/workflows/douyin-api-v4-7666692683432429819.yml
+
+permissions:
+  contents: write
+
+env:
+  TARGET_BRANCH: archive/douyin-api-v4-7666692683432429819-20260731
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: archive/douyin-api-v4-7666692683432429819-20260731
+          fetch-depth: 0
+
+      - name: Generate one-time certificate
+        run: |
+          set -euo pipefail
+          mkdir -p exchange-api-v4
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /tmp/private.pem
+          openssl req -new -x509 -key /tmp/private.pem -out exchange-api-v4/public_cert.pem -days 1 -subj '/CN=douyin-api-v4'
+          printf '%s\n' "$GITHUB_RUN_ID" > exchange-api-v4/run_id.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add exchange-api-v4/public_cert.pem exchange-api-v4/run_id.txt
+          git commit -m 'Publish one-time API certificate [skip ci]'
+          git push origin HEAD:"$TARGET_BRANCH"
+
+      - name: Wait for encrypted request
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            git fetch origin "$TARGET_BRANCH"
+            git reset --hard "origin/$TARGET_BRANCH"
+            if [ -s exchange-api-v4/request.cms.b64 ]; then exit 0; fi
+            sleep 4
+          done
+          exit 1
+
+      - name: Decrypt request
+        run: |
+          base64 -d exchange-api-v4/request.cms.b64 > /tmp/request.cms
+          openssl cms -decrypt -binary -inform DER -in /tmp/request.cms -recip exchange-api-v4/public_cert.pem -inkey /tmp/private.pem -out /tmp/request.json
+          chmod 600 /tmp/request.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install requests
+
+      - name: Replay and paginate
+        env:
+          REQ_JSON: /tmp/request.json
+        run: python tools/dyapi_v4.py
+
+      - name: Remove temporary secrets
+        if: always()
+        run: rm -f /tmp/private.pem /tmp/request.cms /tmp/request.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: douyin-api-v4-7666692683432429819
+          path: |
+            douyin-api-v4-7666692683432429819.zip
+            out/抓取统计.json
+            out/诊断.json
+          if-no-files-found: warn
+          retention-days: 1
