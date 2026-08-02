@@ -62,7 +62,7 @@ jobs:
           git clone --depth 1 https://github.com/jiji262/douyin-downloader.git vendor/douyin-downloader
           pip install -r vendor/douyin-downloader/requirements.txt
           cat tools/v2chunks/chunk_* | tr -d '\n\r' | base64 -d > tools/douyin_full_archive_v2.py
-          python -m py_compile tools/douyin_full_archive_v2.py
+          python -m py_compile tools/douyin_full_archive_v2.py tools/douyin_profile_direct.py
 
       - name: Decrypt authorized login request
         run: |
@@ -82,7 +82,7 @@ jobs:
           PY
 
       - name: Refresh full profile enumeration
-        run: python tools/douyin_profile_enumerate.py
+        run: python tools/douyin_profile_direct.py
 
       - name: Download original media, paginate all comments and all replies, render PDFs
         run: python tools/douyin_full_archive_v2.py
