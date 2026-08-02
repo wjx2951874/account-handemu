@@ -1,0 +1,129 @@
+name: Split Douyin profile artifact 19870927XU
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/douyin-profile-split-bootstrap-19870927XU'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Download completed video artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: '8835978337'
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            --output source-artifact.zip
+          mkdir -p source-artifact
+          unzip -q source-artifact.zip -d source-artifact
+          du -sh source-artifact
+
+      - name: Split into three balanced parts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json, shutil
+
+          src = Path('source-artifact')
+          export = src / 'lyx520_export'
+          if not export.exists():
+              matches = list(src.rglob('lyx520_export'))
+              if not matches:
+                  raise SystemExit('lyx520_export not found')
+              export = matches[0]
+
+          folders = [p for p in export.iterdir() if p.is_dir()]
+          root_files = [p for p in export.iterdir() if p.is_file()]
+          sizes = []
+          for folder in folders:
+              size = sum(f.stat().st_size for f in folder.rglob('*') if f.is_file())
+              sizes.append((size, folder))
+
+          bins = [[], [], []]
+          totals = [0, 0, 0]
+          for size, folder in sorted(sizes, reverse=True):
+              idx = min(range(3), key=lambda i: totals[i])
+              bins[idx].append((size, folder))
+              totals[idx] += size
+
+          manifest = {'source_artifact_id': 8835978337, 'parts': []}
+          for idx, entries in enumerate(bins, 1):
+              dst_root = Path('parts') / f'part_{idx:02d}' / 'lyx520_export'
+              dst_root.mkdir(parents=True, exist_ok=True)
+              for root_file in root_files:
+                  shutil.copy2(root_file, dst_root / root_file.name)
+              for size, folder in entries:
+                  shutil.copytree(folder, dst_root / folder.name)
+              item = {
+                  'part': idx,
+                  'folder_count': len(entries),
+                  'video_bytes': totals[idx],
+                  'folders': [folder.name for _, folder in sorted(entries, key=lambda x: x[1].name, reverse=True)],
+              }
+              manifest['parts'].append(item)
+              (dst_root / f'分卷_{idx:02d}_清单.json').write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding='utf-8')
+
+          for extra in src.iterdir():
+              if extra.name == 'lyx520_export':
+                  continue
+              target = Path('parts') / 'metadata' / extra.name
+              target.parent.mkdir(parents=True, exist_ok=True)
+              if extra.is_dir():
+                  shutil.copytree(extra, target)
+              else:
+                  shutil.copy2(extra, target)
+          Path('parts/分卷总清单.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+          print(json.dumps(manifest, ensure_ascii=False))
+          PY
+          du -sh parts/part_* parts/metadata || true
+
+      - name: Upload part 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-part-01
+          path: parts/part_01/
+          compression-level: 0
+          retention-days: 3
+
+      - name: Upload part 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-part-02
+          path: parts/part_02/
+          compression-level: 0
+          retention-days: 3
+
+      - name: Upload part 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-part-03
+          path: parts/part_03/
+          compression-level: 0
+          retention-days: 3
+
+      - name: Upload manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-manifests
+          path: |
+            parts/metadata/
+            parts/分卷总清单.json
+          compression-level: 6
+          retention-days: 3
