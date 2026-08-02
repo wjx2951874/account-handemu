@@ -35,7 +35,7 @@ jobs:
           unzip -q source-artifact.zip -d source-artifact
           du -sh source-artifact
 
-      - name: Split into three balanced parts
+      - name: Split into nine balanced parts
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -56,15 +56,16 @@ jobs:
               size = sum(f.stat().st_size for f in folder.rglob('*') if f.is_file())
               sizes.append((size, folder))
 
-          bins = [[], [], []]
-          totals = [0, 0, 0]
-          for size, folder in sorted(sizes, reverse=True):
-              idx = min(range(3), key=lambda i: totals[i])
+          bins = [[] for _ in range(9)]
+          totals = [0 for _ in range(9)]
+          for size, folder in sorted(sizes, key=lambda x: x[0], reverse=True):
+              idx = min(range(9), key=lambda i: totals[i])
               bins[idx].append((size, folder))
               totals[idx] += size
 
           manifest = {'source_artifact_id': 8835978337, 'parts': []}
-          for idx, entries in enumerate(bins, 1):
+          for idx0, entries in enumerate(bins):
+              idx = idx0 + 1
               dst_root = Path('parts') / f'part_{idx:02d}' / 'lyx520_export'
               dst_root.mkdir(parents=True, exist_ok=True)
               for root_file in root_files:
@@ -74,7 +75,7 @@ jobs:
               item = {
                   'part': idx,
                   'folder_count': len(entries),
-                  'video_bytes': totals[idx - 1],
+                  'video_bytes': totals[idx0],
                   'folders': [folder.name for _, folder in sorted(entries, key=lambda x: x[1].name, reverse=True)],
               }
               manifest['parts'].append(item)
@@ -94,34 +95,74 @@ jobs:
           PY
           du -sh parts/part_* parts/metadata || true
 
-      - name: Upload part 1
+      - name: Upload part 01
         uses: actions/upload-artifact@v4
         with:
-          name: douyin-profile-videos-19870927XU-part-01
+          name: douyin-profile-videos-19870927XU-drive-01
           path: parts/part_01/
           compression-level: 0
           retention-days: 3
-
-      - name: Upload part 2
+      - name: Upload part 02
         uses: actions/upload-artifact@v4
         with:
-          name: douyin-profile-videos-19870927XU-part-02
+          name: douyin-profile-videos-19870927XU-drive-02
           path: parts/part_02/
           compression-level: 0
           retention-days: 3
-
-      - name: Upload part 3
+      - name: Upload part 03
         uses: actions/upload-artifact@v4
         with:
-          name: douyin-profile-videos-19870927XU-part-03
+          name: douyin-profile-videos-19870927XU-drive-03
           path: parts/part_03/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 04
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-drive-04
+          path: parts/part_04/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 05
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-drive-05
+          path: parts/part_05/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 06
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-drive-06
+          path: parts/part_06/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 07
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-drive-07
+          path: parts/part_07/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 08
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-drive-08
+          path: parts/part_08/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 09
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-videos-19870927XU-drive-09
+          path: parts/part_09/
           compression-level: 0
           retention-days: 3
 
       - name: Upload manifests
         uses: actions/upload-artifact@v4
         with:
-          name: douyin-profile-videos-19870927XU-manifests
+          name: douyin-profile-videos-19870927XU-drive-manifests
           path: |
             parts/metadata/
             parts/分卷总清单.json
