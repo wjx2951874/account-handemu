@@ -74,7 +74,7 @@ jobs:
               item = {
                   'part': idx,
                   'folder_count': len(entries),
-                  'video_bytes': totals[idx],
+                  'video_bytes': totals[idx - 1],
                   'folders': [folder.name for _, folder in sorted(entries, key=lambda x: x[1].name, reverse=True)],
               }
               manifest['parts'].append(item)
