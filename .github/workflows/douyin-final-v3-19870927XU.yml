@@ -1,0 +1,298 @@
+name: Douyin final archive v3 19870927XU
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/douyin-final-v3-bootstrap-19870927XU'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout temporary branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Publish ephemeral public key
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .douyin_final_v3_exchange "$RUNNER_TEMP/douyin_final_v3"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_final_v3/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_final_v3/private.pem" -pubout -out .douyin_final_v3_exchange/public_key.pem
+          printf '%s\n' '${{ github.run_id }}' > .douyin_final_v3_exchange/run_id.txt
+          git rm -f .github/douyin-final-v3-bootstrap-19870927XU
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_final_v3_exchange
+          git commit -m "Publish v3 archive exchange key"
+          git push origin "HEAD:${HEAD_REF}"
+
+      - name: Wait for encrypted login payload
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_final_v3_exchange/payload.json" > "$RUNNER_TEMP/douyin_final_v3/payload.json" 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies and assemble script
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-cjk libpango-1.0-0 libpangoft2-1.0-0
+          python -m pip install --upgrade pip
+          pip install cryptography requests aiohttp pillow weasyprint playwright
+          python -m playwright install --with-deps chromium
+          rm -rf vendor/douyin-downloader
+          git clone --depth 1 https://github.com/jiji262/douyin-downloader.git vendor/douyin-downloader
+          pip install -r vendor/douyin-downloader/requirements.txt
+          cat tools/v2chunks/chunk_* | tr -d '\n\r' | base64 -d > tools/douyin_full_archive_v2.py
+          python -m py_compile tools/douyin_full_archive_v2.py tools/douyin_profile_direct.py
+
+      - name: Decrypt authorized login request
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin_final_v3'
+          obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-final-v3-19870927XU')
+          Path('.private/douyin_login_curl.txt').write_bytes(plain)
+          PY
+
+      - name: Refresh full profile enumeration with verified fallback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_ARTIFACT_ID: '8835845060'
+        run: |
+          set -euo pipefail
+          if python tools/douyin_profile_direct.py; then
+            echo 'Fresh direct profile enumeration succeeded.'
+          else
+            echo 'Fresh direct profile enumeration was blocked; using the last verified full-profile artifact as the archive baseline.'
+            rm -rf douyin_profile_enum baseline-artifact baseline.zip
+            curl --fail --location \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASELINE_ARTIFACT_ID}/zip" \
+              --output baseline.zip
+            mkdir -p baseline-artifact douyin_profile_enum/诊断
+            unzip -q baseline.zip -d baseline-artifact
+            WORKS="$(find baseline-artifact -type f -name '全部作品.json' | head -1)"
+            SUMMARY="$(find baseline-artifact -type f -name '枚举摘要.json' | head -1)"
+            test -n "$WORKS" -a -f "$WORKS"
+            cp "$WORKS" douyin_profile_enum/全部作品.json
+            if [ -n "$SUMMARY" ] && [ -f "$SUMMARY" ]; then cp "$SUMMARY" douyin_profile_enum/枚举摘要.json; fi
+            python - <<'PY'
+            import json
+            from pathlib import Path
+            p=Path('douyin_profile_enum/全部作品.json')
+            data=json.loads(p.read_text())
+            assert len(data)>=117, len(data)
+            Path('douyin_profile_enum/诊断/回退说明.txt').write_text('实时主页枚举受抖音页面限制，使用2026年8月2日成功全量枚举的117个作品元数据作为当前归档基线；媒体和评论仍使用本次有效登录态重新抓取。\n')
+            print({'fallback_work_count':len(data)})
+            PY
+          fi
+
+      - name: Download original media, paginate all comments and all replies, render PDFs
+        run: python tools/douyin_full_archive_v2.py
+
+      - name: Remove plaintext credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_final_v3/private.pem" "$RUNNER_TEMP/douyin_final_v3/payload.json"
+
+      - name: Upload manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-manifest
+          path: |
+            final_v2/manifest/
+            douyin_profile_enum/全部作品.json
+            douyin_profile_enum/枚举摘要.json
+            douyin_profile_enum/诊断/
+          retention-days: 3
+      - name: Upload part 01
+        if: hashFiles('final_v2/parts/part_01/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-01
+          path: final_v2/parts/part_01/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 02
+        if: hashFiles('final_v2/parts/part_02/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-02
+          path: final_v2/parts/part_02/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 03
+        if: hashFiles('final_v2/parts/part_03/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-03
+          path: final_v2/parts/part_03/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 04
+        if: hashFiles('final_v2/parts/part_04/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-04
+          path: final_v2/parts/part_04/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 05
+        if: hashFiles('final_v2/parts/part_05/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-05
+          path: final_v2/parts/part_05/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 06
+        if: hashFiles('final_v2/parts/part_06/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-06
+          path: final_v2/parts/part_06/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 07
+        if: hashFiles('final_v2/parts/part_07/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-07
+          path: final_v2/parts/part_07/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 08
+        if: hashFiles('final_v2/parts/part_08/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-08
+          path: final_v2/parts/part_08/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 09
+        if: hashFiles('final_v2/parts/part_09/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-09
+          path: final_v2/parts/part_09/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 10
+        if: hashFiles('final_v2/parts/part_10/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-10
+          path: final_v2/parts/part_10/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 11
+        if: hashFiles('final_v2/parts/part_11/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-11
+          path: final_v2/parts/part_11/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 12
+        if: hashFiles('final_v2/parts/part_12/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-12
+          path: final_v2/parts/part_12/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 13
+        if: hashFiles('final_v2/parts/part_13/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-13
+          path: final_v2/parts/part_13/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 14
+        if: hashFiles('final_v2/parts/part_14/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-14
+          path: final_v2/parts/part_14/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 15
+        if: hashFiles('final_v2/parts/part_15/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-15
+          path: final_v2/parts/part_15/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 16
+        if: hashFiles('final_v2/parts/part_16/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-16
+          path: final_v2/parts/part_16/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 17
+        if: hashFiles('final_v2/parts/part_17/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-17
+          path: final_v2/parts/part_17/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 18
+        if: hashFiles('final_v2/parts/part_18/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-18
+          path: final_v2/parts/part_18/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 19
+        if: hashFiles('final_v2/parts/part_19/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-19
+          path: final_v2/parts/part_19/
+          compression-level: 0
+          retention-days: 3
+      - name: Upload part 20
+        if: hashFiles('final_v2/parts/part_20/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-final-v3-part-20
+          path: final_v2/parts/part_20/
+          compression-level: 0
+          retention-days: 3
