@@ -1,0 +1,96 @@
+name: Secure Douyin profile enumerate 19870927XU
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/douyin-profile-bootstrap-19870927XU'
+
+permissions:
+  contents: write
+
+jobs:
+  enumerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout temporary branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Publish ephemeral public key
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .douyin_profile_exchange "$RUNNER_TEMP/douyin_profile"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_profile/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_profile/private.pem" -pubout -out .douyin_profile_exchange/public_key.pem
+          printf '%s\n' '${{ github.run_id }}' > .douyin_profile_exchange/run_id.txt
+          git rm -f .github/douyin-profile-bootstrap-19870927XU
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_profile_exchange
+          git commit -m "Publish ephemeral Douyin profile key"
+          git push origin "HEAD:${HEAD_REF}"
+
+      - name: Wait for encrypted login payload
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          found=0
+          for i in $(seq 1 120); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_profile_exchange/payload.json" > "$RUNNER_TEMP/douyin_profile/payload.json" 2>/dev/null; then
+              found=1
+              break
+            fi
+            sleep 5
+          done
+          test "$found" = 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install cryptography playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Decrypt authorized login request
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin_profile'
+          obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-profile-19870927XU')
+          Path('.private/douyin_login_curl.txt').write_bytes(plain)
+          PY
+
+      - name: Enumerate target profile works
+        run: python tools/douyin_profile_enumerate.py
+
+      - name: Remove plaintext credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_profile/private.pem" "$RUNNER_TEMP/douyin_profile/payload.json"
+
+      - name: Upload enumeration result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-enum-19870927XU
+          path: douyin_profile_enum/
+          if-no-files-found: warn
+          retention-days: 3
