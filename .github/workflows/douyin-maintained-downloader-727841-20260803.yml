@@ -1,0 +1,212 @@
+name: Douyin maintained downloader recovery 727841
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-maintained-downloader-727841-bootstrap'
+permissions:
+  contents: write
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Publish ephemeral key and run ID
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .douyin_maintained_exchange "$RUNNER_TEMP/douyin_maintained"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_maintained/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_maintained/private.pem" -pubout -out .douyin_maintained_exchange/public_key.pem
+          printf '%s\n' "$GITHUB_RUN_ID" > .douyin_maintained_exchange/run_id.txt
+          git rm -f .github/douyin-maintained-downloader-727841-bootstrap
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_maintained_exchange
+          git commit -m 'Publish maintained-downloader exchange key and run ID'
+          git push origin "HEAD:${HEAD_REF}"
+      - name: Wait for encrypted authorized request
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_maintained_exchange/payload.json" > "$RUNNER_TEMP/douyin_maintained/payload.json" 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install media and browser dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          git clone --depth 1 https://github.com/jiji262/douyin-downloader.git maintained_downloader
+          python -m pip install --upgrade pip
+          pip install -r maintained_downloader/requirements.txt cryptography playwright pyyaml
+          python -m playwright install --with-deps chromium
+      - name: Decrypt authorized login request
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64, json, os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root = Path(os.environ['RUNNER_TEMP']) / 'douyin_maintained'
+          obj = json.loads((root / 'payload.json').read_text())
+          key = serialization.load_pem_private_key((root / 'private.pem').read_bytes(), password=None)
+          aes = key.decrypt(
+              base64.b64decode(obj['wrapped_key']),
+              padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
+          )
+          plain = AESGCM(aes).decrypt(
+              base64.b64decode(obj['nonce']),
+              base64.b64decode(obj['ciphertext']),
+              b'douyin-maintained-downloader-727841',
+          )
+          Path('.private/douyin_login_curl.txt').write_bytes(plain)
+          PY
+      - name: Build highest-quality single-work configuration
+        run: |
+          python - <<'PY'
+          import re, shlex, yaml
+          from pathlib import Path
+          raw = Path('.private/douyin_login_curl.txt').read_text(encoding='utf-8', errors='replace')
+          tokens = shlex.split(raw.replace('\\\n',' '), posix=True)
+          cookie = ''
+          for i, token in enumerate(tokens):
+              if token in ('-b','--cookie') and i+1 < len(tokens):
+                  cookie = tokens[i+1]
+              elif token in ('-H','--header') and i+1 < len(tokens) and tokens[i+1].lower().startswith('cookie:'):
+                  cookie = tokens[i+1].split(':',1)[1].strip()
+          if not cookie:
+              m = re.search(r'(?im)^\s*cookie\s*:\s*(.+)$', raw)
+              cookie = m.group(1).strip().strip("'\"") if m else ''
+          pairs = {}
+          for part in cookie.split(';'):
+              if '=' in part:
+                  name, value = part.strip().split('=',1)
+                  if name and not re.search(r'\s', name):
+                      pairs[name] = value
+          required = ['msToken','ttwid','odin_tt','passport_csrf_token','sid_guard']
+          missing = [name for name in required if not pairs.get(name)]
+          if missing:
+              raise SystemExit('missing required cookie fields: ' + ','.join(missing))
+          config = {
+              'link': ['https://www.douyin.com/video/7278410935755148604'],
+              'path': './Downloaded/',
+              'video': True,
+              'music': False,
+              'cover': False,
+              'avatar': False,
+              'json': True,
+              'folderstyle': False,
+              'filename_template': '{id}',
+              'folder_template': '{id}',
+              'mode': ['post'],
+              'number': {'post': 1, 'like': 0, 'allmix': 0, 'mix': 0, 'music': 0, 'collect': 0, 'collectmix': 0},
+              'increase': {'post': False, 'like': False, 'allmix': False, 'mix': False, 'music': False},
+              'thread': 1,
+              'retry_times': 5,
+              'proxy': '',
+              'database': False,
+              'database_path': 'dy_downloader.db',
+              'video_quality': 'highest',
+              'progress': {'quiet_logs': False},
+              'browser_fallback': {'enabled': True, 'headless': True, 'max_scrolls': 80, 'idle_rounds': 10, 'wait_timeout_seconds': 300},
+              'comments': {'enabled': False, 'include_replies': False, 'max_comments': 0, 'page_size': 20},
+              'transcript': {'enabled': False},
+              'notifications': {'enabled': False, 'providers': []},
+              'cookies': {name: pairs[name] for name in required},
+          }
+          Path('maintained_downloader/config.yml').write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding='utf-8')
+          print('normalized_cookie_fields', len(pairs))
+          PY
+      - name: Download exact work at highest available quality
+        id: download
+        continue-on-error: true
+        working-directory: maintained_downloader
+        run: python run.py -c config.yml -u 'https://www.douyin.com/video/7278410935755148604' -p ./Downloaded -t 1 -v
+      - name: Independently select and verify exact high-resolution MP4
+        id: verify
+        continue-on-error: true
+        run: |
+          cat > /tmp/verify_download.py <<'PY'
+          import hashlib, json, shutil, subprocess, sys
+          from pathlib import Path
+          AID='7278410935755148604'
+          root=Path('maintained_downloader/Downloaded')
+          out=Path('verified_output'); report_dir=Path('verified_report')
+          out.mkdir(exist_ok=True); report_dir.mkdir(exist_ok=True)
+          def probe(path):
+              p=subprocess.run(['ffprobe','-v','error','-probesize','20M','-analyzeduration','20M','-show_entries','stream=index,codec_type,codec_name,width,height,duration,bit_rate','-show_entries','format=duration,size,bit_rate,format_name','-of','json',str(path)],capture_output=True,text=True,timeout=90)
+              return json.loads(p.stdout) if p.returncode==0 else None
+          files=[]
+          if root.exists():
+              for path in root.rglob('*'):
+                  if path.is_file() and AID in path.name and path.suffix.lower() in ('.mp4','.mov','.mkv','.webm'):
+                      files.append(path)
+          attempts=[]; valid=[]
+          for path in files:
+              pr=probe(path); rec={'path':str(path),'size':path.stat().st_size,'probe':pr}
+              if pr:
+                  streams=pr.get('streams') or []
+                  videos=[s for s in streams if s.get('codec_type')=='video']
+                  audios=[s for s in streams if s.get('codec_type')=='audio']
+                  if videos:
+                      v=videos[0]; w=int(v.get('width') or 0); h=int(v.get('height') or 0)
+                      duration=float((pr.get('format') or {}).get('duration') or v.get('duration') or 0)
+                      rec.update({'width':w,'height':h,'duration':duration,'has_audio':bool(audios)})
+                      if 5.0 <= duration <= 10.0 and w*h > 720*1280:
+                          valid.append((w*h,path,rec))
+              attempts.append(rec)
+          report={'work_id':AID,'download_step_outcome':'${{ steps.download.outcome }}','candidate_count':len(files),'attempts':attempts,'valid_hq_count':len(valid)}
+          if not valid:
+              (report_dir/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+              raise SystemExit('no exact verified HQ video produced')
+          _,src,chosen=max(valid,key=lambda x:(x[0],x[1].stat().st_size))
+          final=out/f'{AID}.mp4'
+          p=subprocess.run(['ffmpeg','-y','-i',str(src),'-map','0:v:0','-map','0:a:0?','-c','copy','-movflags','+faststart',str(final)],capture_output=True,text=True,timeout=180)
+          if p.returncode:
+              raise SystemExit(p.stderr[-1500:])
+          final_probe=probe(final)
+          subprocess.run(['ffmpeg','-v','error','-i',str(final),'-f','null','-'],check=True,timeout=180)
+          report.update({'chosen':chosen,'final_probe':final_probe,'final_size':final.stat().st_size,'sha256':hashlib.sha256(final.read_bytes()).hexdigest()})
+          (report_dir/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print(json.dumps({'success':True,'width':chosen['width'],'height':chosen['height'],'duration':chosen['duration'],'has_audio':chosen['has_audio'],'size':final.stat().st_size},ensure_ascii=False))
+          PY
+          python /tmp/verify_download.py
+      - name: Remove plaintext credentials and generated config
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_maintained" maintained_downloader/config.yml
+      - name: Upload verified MP4
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-maintained-downloader-727841-video
+          path: verified_output/7278410935755148604.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: warn
+      - name: Upload verification report and downloader logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-maintained-downloader-727841-report
+          path: |
+            verified_report/
+            maintained_downloader/Downloaded/**/*.json
+          retention-days: 3
+          if-no-files-found: warn
+      - name: Require independently verified success
+        if: steps.verify.outcome != 'success'
+        run: exit 1
