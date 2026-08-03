@@ -1,0 +1,63 @@
+name: Douyin direct signed media 727841
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-hq-direct-727841-bootstrap'
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Download signed media tracks and verify
+        run: |
+          set -euo pipefail
+          mkdir -p output report
+          VIDEO_URL='https://v5-dy-ov-experiment.zjcdn.com/13b2f50b13ecec74771736be32788049/6a7202aa/video/tos/cn/tos-cn-vd-0026/osz1MAB1IABiABywfAAgg7AiHum8AjM0DSpeNN/media-video-avc1/'
+          AUDIO_URL='https://v5-dy-ov-experiment.zjcdn.com/2970c05baf4cce1ecd874e919571d5fe/6a7202aa/video/tos/cn/tos-cn-ve-15/ok5dlqgtPEA3TAmqAGAYAfRMfpADQBANZDl9ZF/media-audio-und-mp4a/'
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+          REFERER='https://www.douyin.com/video/7278410935755148604'
+          curl -fL --retry 3 --connect-timeout 20 --max-time 180 -A "$UA" -e "$REFERER" -o video_track.mp4 "$VIDEO_URL"
+          curl -fL --retry 3 --connect-timeout 20 --max-time 180 -A "$UA" -e "$REFERER" -o audio_track.m4a "$AUDIO_URL"
+          ffprobe -v error -show_streams -show_format -of json video_track.mp4 > report/video_probe.json
+          ffprobe -v error -show_streams -show_format -of json audio_track.m4a > report/audio_probe.json
+          python - <<'PY'
+          import json,sys
+          v=json.load(open('report/video_probe.json'))
+          a=json.load(open('report/audio_probe.json'))
+          vs=[s for s in v.get('streams',[]) if s.get('codec_type')=='video']
+          aus=[s for s in a.get('streams',[]) if s.get('codec_type')=='audio']
+          if not vs or not aus:
+              raise SystemExit('missing expected media stream')
+          w=int(vs[0].get('width') or 0); h=int(vs[0].get('height') or 0)
+          if w*h <= 720*1280:
+              raise SystemExit(f'video not higher than 720p: {w}x{h}')
+          print(f'validated source {w}x{h}')
+          PY
+          ffmpeg -y -i video_track.mp4 -i audio_track.m4a -map 0:v:0 -map 1:a:0 -c copy -shortest -movflags +faststart output/7278410935755148604.mp4
+          ffprobe -v error -show_streams -show_format -of json output/7278410935755148604.mp4 > report/final_probe.json
+          ffmpeg -v error -i output/7278410935755148604.mp4 -f null -
+          sha256sum output/7278410935755148604.mp4 > report/sha256.txt
+          stat -c '%s' output/7278410935755148604.mp4 > report/size.txt
+      - name: Upload verified final MP4
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-direct-727841-video
+          path: output/7278410935755148604.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-direct-727841-report
+          path: report/
+          retention-days: 3
+          if-no-files-found: warn
