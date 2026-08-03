@@ -1,0 +1,130 @@
+name: Douyin HQ single 727841
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-hq-single-727841-bootstrap'
+permissions:
+  contents: write
+  actions: read
+jobs:
+  replace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Download baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p baseline_unpack baseline
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/${{ github.repository }}/actions/artifacts/8844562694/zip -o baseline.zip
+          unzip -q baseline.zip -d baseline_unpack
+          cp 'baseline_unpack/final_v2/manifest/归档清单.json' baseline/归档清单.json
+          cp 'baseline_unpack/douyin_profile_enum/全部作品.json' baseline/全部作品.json
+      - name: Patch single-work retries and flat path
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tools/douyin_hq_replace_20260803.py'); s=p.read_text()
+          s=s.replace('targets = make_targets(old_list, folders)', 'targets = [t for t in make_targets(old_list, folders) if t["id"] == "7278410935755148604"]')
+          s=s.replace('if current_author_uid != TARGET_UID:', 'if current_author_uid and current_author_uid != TARGET_UID:')
+          s=s.replace('''            aweme, page_debug = fetch_aweme_detail(page, aid)
+                      record["page_debug"] = page_debug
+          ''','''            aweme = None
+                      page_debug = {}
+                      for retry_index in range(10):
+                          aweme, page_debug = fetch_aweme_detail(page, aid)
+                          if aweme and candidates(aweme):
+                              break
+                          page.wait_for_timeout(2000)
+                      record["page_debug"] = page_debug
+          ''')
+          s=s.replace('''            folder = target["folder"] or aid
+                      final_dir = OUT / folder
+                      final_dir.mkdir(parents=True, exist_ok=True)
+                      final_path = final_dir / f"{aid}.mp4"
+          ''','''            folder = target["folder"] or aid
+                      OUT.mkdir(parents=True, exist_ok=True)
+                      final_path = OUT / f"{aid}.mp4"
+          ''')
+          s=s.replace('''            "local": f"hq_output/{result['folder']}/{result['id']}.mp4",
+          ''','''            "local": f"hq_output/{result['id']}.mp4",
+          ''')
+          p.write_text(s)
+          assert 'retry_index in range(10)' in s and '7278410935755148604' in s
+          PY
+      - name: Publish ephemeral key
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          mkdir -p .douyin_single_exchange "$RUNNER_TEMP/douyin_single"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_single/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_single/private.pem" -pubout -out .douyin_single_exchange/public_key.pem
+          git rm -f .github/douyin-hq-single-727841-bootstrap
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_single_exchange && git commit -m 'Publish single HQ exchange key'
+          git push origin "HEAD:${HEAD_REF}"
+      - name: Wait for encrypted payload
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          for i in $(seq 1 180); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_single_exchange/payload.json" > "$RUNNER_TEMP/douyin_single/payload.json" 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install requests cryptography playwright
+          python -m playwright install --with-deps chromium
+      - name: Decrypt cookies
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin_single'; obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-hq-single-727841')
+          Path('.private/cookie.txt').write_bytes(plain)
+          PY
+      - name: Refresh and verify 1080 source
+        id: download
+        continue-on-error: true
+        run: python tools/douyin_hq_replace_20260803.py
+      - name: Remove credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_single"
+      - name: Upload video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-single-727841-video
+          path: hq_output/*.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: warn
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-single-727841-report
+          path: hq_report/
+          retention-days: 3
+          if-no-files-found: error
+      - name: Require success
+        if: steps.download.outcome != 'success'
+        run: exit 1
