@@ -1,0 +1,327 @@
+name: Douyin HQ media full-range recovery 727841 v4
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-hq-media-727841-v4-bootstrap'
+permissions:
+  contents: write
+concurrency:
+  group: douyin-hq-media-727841-v4-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Publish encrypted exchange key and run ID
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .douyin_media_v4_exchange "$RUNNER_TEMP/douyin_media_v4"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_media_v4/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_media_v4/private.pem" -pubout -out .douyin_media_v4_exchange/public_key.pem
+          printf '%s\n' "$GITHUB_RUN_ID" > .douyin_media_v4_exchange/run_id.txt
+          git rm -f .github/douyin-hq-media-727841-v4-bootstrap
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_media_v4_exchange
+          git commit -m 'Publish HQ media v4 exchange key and run ID'
+          git push origin "HEAD:${HEAD_REF}"
+      - name: Wait for encrypted login payload
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_media_v4_exchange/payload.json" > "$RUNNER_TEMP/douyin_media_v4/payload.json" 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install media and browser dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --disable-pip-version-check cryptography playwright
+          python -m playwright install --with-deps chromium
+      - name: Decrypt authorized login cookie
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64, json, os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin_media_v4'
+          obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-hq-media-727841-v4')
+          Path('.private/cookie.txt').write_bytes(plain)
+          PY
+      - name: Capture and reconstruct complete high-resolution video
+        id: recover
+        continue-on-error: true
+        run: |
+          cat > /tmp/recover_v4.py <<'PY'
+          import hashlib, json, re, subprocess, sys, urllib.parse
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          AID='7278410935755148604'
+          TARGET=7.15
+          MAX_TOTAL=80*1024*1024
+          CHUNK=2*1024*1024
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+          raw_cookie=Path('.private/cookie.txt').read_text().strip()
+          raw_dir=Path('captured_raw'); raw_dir.mkdir(exist_ok=True)
+          out_dir=Path('hq_output'); out_dir.mkdir(exist_ok=True)
+          rep_dir=Path('hq_report'); rep_dir.mkdir(exist_ok=True)
+
+          def cookie_list(raw):
+              result=[]
+              for part in raw.split(';'):
+                  if '=' not in part:
+                      continue
+                  name,value=part.strip().split('=',1)
+                  if name and not re.search(r'\s',name):
+                      result.append({'name':name,'value':value,'domain':'.douyin.com','path':'/','secure':True})
+              return result
+
+          def probe(path):
+              p=subprocess.run(
+                  ['ffprobe','-v','error','-probesize','50M','-analyzeduration','50M',
+                   '-show_entries','stream=index,codec_type,codec_name,width,height,bit_rate,duration',
+                   '-show_entries','format=format_name,duration,size,bit_rate','-of','json',str(path)],
+                  capture_output=True,text=True,timeout=120)
+              if p.returncode:
+                  return None
+              data=json.loads(p.stdout)
+              fmt=data.get('format') or {}
+              data['duration']=float(fmt.get('duration') or 0)
+              data['size']=int(fmt.get('size') or path.stat().st_size)
+              return data
+
+          def likely_media(url, content_type=''):
+              low=url.lower(); ct=(content_type or '').lower()
+              return (
+                  ct.startswith('video/') or 'video' in ct or
+                  any(x in low for x in ('media-video','/video/tos/','mime_type=video','video_id=','play_addr','/aweme/v1/play/'))
+              )
+
+          def parse_content_range(value):
+              m=re.search(r'bytes\s+(\d+)-(\d+)/(\d+|\*)', value or '', re.I)
+              if not m or m.group(3)=='*':
+                  return None
+              return int(m.group(1)),int(m.group(2)),int(m.group(3))
+
+          def valid_binary(data):
+              if not data or len(data)<1000:
+                  return False
+              head=data[:512].lstrip()
+              if head.startswith((b'<',b'{',b'[',b'function',b'!function',b'window.',b'var ',b'const ',b'let ')):
+                  return False
+              return True
+
+          def request_bytes(request,url,headers):
+              r=request.get(url,headers=headers,timeout=120000,fail_on_status_code=False)
+              return r.status,r.headers,r.body()
+
+          def reconstruct(request,url,index):
+              base={'Referer':f'https://www.douyin.com/video/{AID}','Accept':'*/*','Origin':'https://www.douyin.com'}
+              status,headers,data=request_bytes(request,url,{**base,'Range':'bytes=0-0'})
+              cr=parse_content_range(headers.get('content-range'))
+              if status==200 and valid_binary(data):
+                  path=raw_dir/f'full_{index:03d}.bin'
+                  path.write_bytes(data)
+                  return path,{'mode':'single-200','status':status,'size':len(data),'content_type':headers.get('content-type'),'content_range':headers.get('content-range')}
+              if status==206 and cr:
+                  total=cr[2]
+                  if total<=0 or total>MAX_TOTAL:
+                      return None,{'mode':'range-rejected','status':status,'total':total}
+                  path=raw_dir/f'ranged_{index:03d}.bin'
+                  with path.open('wb') as f:
+                      start=0
+                      while start<total:
+                          end=min(total-1,start+CHUNK-1)
+                          s,h,b=request_bytes(request,url,{**base,'Range':f'bytes={start}-{end}'})
+                          got=parse_content_range(h.get('content-range'))
+                          if s not in (200,206) or not b:
+                              raise RuntimeError(f'range {start}-{end} failed: HTTP {s}')
+                          if s==200:
+                              if start!=0:
+                                  raise RuntimeError('server switched to full body after partial ranges')
+                              f.write(b); start=len(b); total=len(b); break
+                          if got and got[0]!=start:
+                              raise RuntimeError(f'unexpected range start {got[0]} != {start}')
+                          f.write(b)
+                          start += len(b)
+                  return path,{'mode':'range-reconstructed','status':status,'size':path.stat().st_size,'total':total,'content_type':headers.get('content-type'),'content_range':headers.get('content-range')}
+              status2,headers2,data2=request_bytes(request,url,base)
+              if status2 in (200,206) and valid_binary(data2):
+                  path=raw_dir/f'fallback_{index:03d}.bin'
+                  path.write_bytes(data2)
+                  return path,{'mode':'fallback','status':status2,'size':len(data2),'content_type':headers2.get('content-type'),'content_range':headers2.get('content-range')}
+              return None,{'mode':'failed','status':status2,'size':len(data2)}
+
+          media_urls=[]
+          browser_bodies=[]
+          page_debug=[]
+          with sync_playwright() as pw:
+              browser=pw.chromium.launch(headless=True,args=['--disable-blink-features=AutomationControlled','--autoplay-policy=no-user-gesture-required'])
+              context=browser.new_context(
+                  user_agent=UA,locale='zh-CN',viewport={'width':1440,'height':2560},device_scale_factor=2,
+                  extra_http_headers={'Referer':f'https://www.douyin.com/video/{AID}'})
+              context.add_cookies(cookie_list(raw_cookie))
+              page=context.new_page()
+
+              def handle_response(response):
+                  try:
+                      headers=response.all_headers()
+                      ct=headers.get('content-type','')
+                      if not likely_media(response.url,ct):
+                          return
+                      media_urls.append(response.url)
+                      try:
+                          body=response.body()
+                          if valid_binary(body):
+                              browser_bodies.append((response.url,headers,body))
+                      except Exception:
+                          pass
+                  except Exception:
+                      pass
+
+              page.on('response',handle_response)
+              urls=[
+                  f'https://www.douyin.com/video/{AID}',
+                  f'https://www.douyin.com/jingxuan?modal_id={AID}',
+                  f'https://www.iesdouyin.com/share/video/{AID}/'
+              ]
+              for target_url in urls:
+                  try:
+                      page.goto(target_url,wait_until='domcontentloaded',timeout=90000)
+                      page.wait_for_timeout(7000)
+                      page.evaluate("""() => document.querySelectorAll('video').forEach(v => {
+                          v.muted=false; v.volume=.01; v.currentTime=0; v.play().catch(()=>{})
+                      })""")
+                      page.wait_for_timeout(18000)
+                      media_urls.extend(page.evaluate("() => [...document.querySelectorAll('video')].flatMap(v=>[v.src,v.currentSrc]).filter(Boolean)"))
+                      media_urls.extend(page.evaluate("() => performance.getEntriesByType('resource').map(x=>x.name).filter(Boolean)"))
+                      page_debug.append({'url':target_url,'title':page.title(),'video_count':page.locator('video').count()})
+                  except Exception as exc:
+                      page_debug.append({'url':target_url,'error':f'{type(exc).__name__}: {exc}'})
+
+              candidates=[]
+              for i,(url,headers,body) in enumerate(browser_bodies,1):
+                  path=raw_dir/f'browser_{i:03d}.bin'
+                  path.write_bytes(body)
+                  candidates.append({'path':str(path),'source':'browser-body','url_host':urllib.parse.urlsplit(url).netloc,'size':len(body),'content_range':headers.get('content-range')})
+
+              unique=[]; seen=set()
+              for url in media_urls:
+                  if not isinstance(url,str) or not url.startswith('http') or url in seen:
+                      continue
+                  seen.add(url)
+                  if likely_media(url):
+                      unique.append(url)
+              reconstruction_errors=[]
+              for i,url in enumerate(unique,1):
+                  try:
+                      path,meta=reconstruct(context.request,url,i)
+                      if path:
+                          candidates.append({'path':str(path),'source':meta.get('mode'),'url_host':urllib.parse.urlsplit(url).netloc,**meta})
+                  except Exception as exc:
+                      reconstruction_errors.append({'host':urllib.parse.urlsplit(url).netloc,'error':f'{type(exc).__name__}: {exc}'})
+              browser.close()
+
+          assessed=[]
+          for rec in candidates:
+              path=Path(rec['path'])
+              pr=probe(path)
+              if not pr:
+                  continue
+              streams=pr.get('streams') or []
+              videos=[s for s in streams if s.get('codec_type')=='video']
+              audios=[s for s in streams if s.get('codec_type')=='audio']
+              if not videos:
+                  continue
+              v=videos[0]
+              width=int(v.get('width') or 0); height=int(v.get('height') or 0)
+              duration=pr['duration']
+              rec.update({'probe':pr,'width':width,'height':height,'duration':duration,'has_audio':bool(audios),'size':path.stat().st_size})
+              if width*height>720*1280 and (not duration or abs(duration-TARGET)<=2.0):
+                  assessed.append(rec)
+
+          selected=max(assessed,key=lambda x:(x['width']*x['height'],x['size'])) if assessed else None
+          final=out_dir/f'{AID}_video_only.mp4'
+          result={
+              'work_id':AID,
+              'observed_media_url_count':len(set(media_urls)),
+              'candidate_binary_count':len(candidates),
+              'valid_high_resolution_count':len(assessed),
+              'page_debug':page_debug,
+              'reconstruction_errors':reconstruction_errors[-100:],
+              'candidate_summaries':[
+                  {k:r.get(k) for k in ('source','status','content_type','content_range','size','url_host','width','height','duration','has_audio')}
+                  for r in assessed
+              ]
+          }
+          if selected:
+              remux=subprocess.run(
+                  ['ffmpeg','-y','-i',selected['path'],'-map','0:v:0','-an','-c','copy','-movflags','+faststart',str(final)],
+                  capture_output=True,text=True,timeout=240)
+              final_probe=probe(final) if remux.returncode==0 else None
+              if final_probe:
+                  streams=final_probe.get('streams') or []
+                  videos=[s for s in streams if s.get('codec_type')=='video']
+                  width=int(videos[0].get('width') or 0) if videos else 0
+                  height=int(videos[0].get('height') or 0) if videos else 0
+                  result.update({
+                      'success':bool(videos and width*height>720*1280),
+                      'width':width,'height':height,'duration':final_probe['duration'],
+                      'size':final.stat().st_size,
+                      'sha256':hashlib.sha256(final.read_bytes()).hexdigest(),
+                      'probe':final_probe
+                  })
+              else:
+                  result.update({'success':False,'error':'selected candidate could not be remuxed','remux_error':remux.stderr[-2000:]})
+          else:
+              result.update({'success':False,'error':'no complete high-resolution video candidate found'})
+          (rep_dir/'报告.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
+          print(json.dumps({k:result.get(k) for k in ('success','observed_media_url_count','candidate_binary_count','valid_high_resolution_count','width','height','duration','size')},ensure_ascii=False))
+          if not result.get('success'):
+              sys.exit(2)
+          PY
+          python /tmp/recover_v4.py
+      - name: Remove plaintext credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_media_v4"
+      - name: Upload recovered video track
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-media-727841-v4-video
+          path: hq_output/*.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: warn
+      - name: Upload recovery report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-media-727841-v4-report
+          path: hq_report/
+          retention-days: 3
+          if-no-files-found: error
+      - name: Require recovery success
+        if: steps.recover.outcome != 'success'
+        run: exit 1
