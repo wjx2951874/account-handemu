@@ -1,0 +1,251 @@
+name: Douyin highest-quality replacement v4
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-hq-replace-v4-bootstrap'
+permissions:
+  contents: write
+  actions: read
+jobs:
+  replace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout temporary branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Download verified baseline manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p baseline_unpack baseline
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/artifacts/8844562694/zip -o baseline.zip
+          unzip -q baseline.zip -d baseline_unpack
+          cp 'baseline_unpack/final_v2/manifest/归档清单.json' baseline/归档清单.json
+          cp 'baseline_unpack/douyin_profile_enum/全部作品.json' baseline/全部作品.json
+      - name: Patch retries, baseline fallback and flat artifact paths
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tools/douyin_hq_replace_20260803.py')
+          s=p.read_text()
+          s=s.replace('if current_author_uid != TARGET_UID:', 'if current_author_uid and current_author_uid != TARGET_UID:')
+          s=s.replace('''            folder = target["folder"] or aid
+                      final_dir = OUT / folder
+                      final_dir.mkdir(parents=True, exist_ok=True)
+                      final_path = final_dir / f"{aid}.mp4"
+          ''','''            folder = target["folder"] or aid
+                      OUT.mkdir(parents=True, exist_ok=True)
+                      final_path = OUT / f"{aid}.mp4"
+          ''')
+          s=s.replace('''            "local": f"hq_output/{result['folder']}/{result['id']}.mp4",
+          ''','''            "local": f"hq_output/{result['id']}.mp4",
+          ''')
+          s=s.replace('''    old_list = json.loads((BASE / "全部作品.json").read_text())
+              folders = {
+          ''','''    old_list = json.loads((BASE / "全部作品.json").read_text())
+              old_by_id = {str(item.get("aweme_id") or ""): item for item in old_list}
+              folders = {
+          ''')
+          old='''            aweme, page_debug = fetch_aweme_detail(page, aid)
+                      record["page_debug"] = page_debug
+                      if not aweme:
+                          record.update(status="failed", error="detail page did not expose aweme metadata")
+                          results.append(record)
+                          print(f"[{index}/{len(targets)}] {aid}: metadata missing", flush=True)
+                          continue
+
+                      current_author_uid = str((aweme.get("author") or {}).get("uid") or "")
+                      record["fresh_author_uid"] = current_author_uid
+                      if current_author_uid and current_author_uid != TARGET_UID:
+                          record.update(
+                              status="failed",
+                              error=f"author UID mismatch: {current_author_uid}",
+                          )
+                          results.append(record)
+                          continue
+
+                      stream_candidates = candidates(aweme)
+                      record["candidate_count"] = len(stream_candidates)
+                      record["candidate_summary"] = [
+                          {
+                              key: candidate[key]
+                              for key in (
+                                  "source",
+                                  "width",
+                                  "height",
+                                  "bit_rate",
+                                  "data_size",
+                                  "gear_name",
+                                  "codec_hint",
+                              )
+                          }
+                          for candidate in stream_candidates
+                      ]
+                      if not stream_candidates:
+                          record.update(status="failed", error="no fresh video candidates")
+                          results.append(record)
+                          continue
+          '''
+          new='''            aweme = None
+                      page_debug = {}
+                      for detail_attempt in range(3):
+                          aweme, page_debug = fetch_aweme_detail(page, aid)
+                          if aweme:
+                              break
+                          page.wait_for_timeout(1500)
+                      record["page_debug"] = page_debug
+
+                      stream_candidates = []
+                      if aweme:
+                          current_author_uid = str((aweme.get("author") or {}).get("uid") or "")
+                          record["fresh_author_uid"] = current_author_uid
+                          if current_author_uid and current_author_uid != TARGET_UID:
+                              record.update(
+                                  status="failed",
+                                  error=f"author UID mismatch: {current_author_uid}",
+                              )
+                              results.append(record)
+                              continue
+                          stream_candidates = candidates(aweme)
+
+                      if not stream_candidates:
+                          old_aweme = old_by_id.get(aid) or {}
+                          stream_candidates = []
+                          for old_candidate in old_aweme.get("video_candidates") or []:
+                              urls = [u for u in (old_candidate.get("urls") or []) if isinstance(u, str) and u.startswith("http")]
+                              if not urls:
+                                  continue
+                              stream_candidates.append({
+                                  "source": "baseline." + str(old_candidate.get("source") or "unknown"),
+                                  "urls": urls,
+                                  "width": int(old_candidate.get("width") or 0),
+                                  "height": int(old_candidate.get("height") or 0),
+                                  "bit_rate": int(old_candidate.get("bit_rate") or 0),
+                                  "data_size": int(old_candidate.get("data_size") or 0),
+                                  "gear_name": str(old_candidate.get("gear_name") or ""),
+                                  "quality_type": old_candidate.get("quality_type"),
+                                  "codec_hint": str(old_candidate.get("source") or "baseline"),
+                              })
+                          stream_candidates.sort(
+                              key=lambda c: (c["width"] * c["height"], c["bit_rate"], c["data_size"]),
+                              reverse=True,
+                          )
+                          record["candidate_source"] = "baseline_fallback"
+                      else:
+                          record["candidate_source"] = "fresh_detail"
+
+                      record["candidate_count"] = len(stream_candidates)
+                      record["candidate_summary"] = [
+                          {
+                              key: candidate[key]
+                              for key in (
+                                  "source",
+                                  "width",
+                                  "height",
+                                  "bit_rate",
+                                  "data_size",
+                                  "gear_name",
+                                  "codec_hint",
+                              )
+                          }
+                          for candidate in stream_candidates
+                      ]
+                      if not stream_candidates:
+                          record.update(status="failed", error="no fresh or baseline video candidates")
+                          results.append(record)
+                          continue
+          '''
+          if old not in s:
+              raise SystemExit('target metadata block not found')
+          s=s.replace(old,new)
+          p.write_text(s)
+          assert 'old_by_id =' in s
+          assert 'candidate_source' in s
+          assert 'final_path = OUT / f"{aid}.mp4"' in s
+          PY
+      - name: Publish ephemeral public key
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .douyin_hq_exchange "$RUNNER_TEMP/douyin_hq"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_hq/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_hq/private.pem" -pubout -out .douyin_hq_exchange/public_key.pem
+          printf '%s\n' '${{ github.run_id }}' > .douyin_hq_exchange/run_id.txt
+          git rm -f .github/douyin-hq-replace-v4-bootstrap
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_hq_exchange
+          git commit -m 'Publish HQ replacement v4 exchange key'
+          git push origin "HEAD:${HEAD_REF}"
+      - name: Wait for encrypted login payload
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_hq_exchange/payload.json" > "$RUNNER_TEMP/douyin_hq/payload.json" 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - name: Install runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install media and browser dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python -m pip install --upgrade pip
+          pip install requests cryptography playwright
+          python -m playwright install --with-deps chromium
+      - name: Decrypt authorized login cookies
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin_hq'
+          obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-hq-replace-19870927XU')
+          Path('.private/cookie.txt').write_bytes(plain)
+          PY
+      - name: Download and verify highest-resolution replacements
+        id: replace
+        continue-on-error: true
+        run: python tools/douyin_hq_replace_20260803.py
+      - name: Remove plaintext credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_hq/private.pem" "$RUNNER_TEMP/douyin_hq/payload.json"
+      - name: Upload replacement videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-replacements-v4-19870927XU
+          path: hq_output/*.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-replacement-report-v4-19870927XU
+          path: hq_report/
+          retention-days: 3
+          compression-level: 6
+          if-no-files-found: error
+      - name: Require all 44 replacements
+        if: steps.replace.outcome != 'success'
+        run: exit 1
