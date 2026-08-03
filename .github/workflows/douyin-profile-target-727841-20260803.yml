@@ -1,0 +1,235 @@
+name: Douyin profile target recovery 727841
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-profile-target-727841-bootstrap'
+permissions:
+  contents: write
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Publish ephemeral key and run ID
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p .douyin_profile_target_exchange "$RUNNER_TEMP/douyin_profile_target"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_profile_target/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_profile_target/private.pem" -pubout -out .douyin_profile_target_exchange/public_key.pem
+          printf '%s\n' "$GITHUB_RUN_ID" > .douyin_profile_target_exchange/run_id.txt
+          git rm -f .github/douyin-profile-target-727841-bootstrap
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_profile_target_exchange
+          git commit -m 'Publish profile-target exchange key and run ID'
+          git push origin "HEAD:${HEAD_REF}"
+      - name: Wait for encrypted cookie header
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 180); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_profile_target_exchange/payload.json" > "$RUNNER_TEMP/douyin_profile_target/payload.json" 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --disable-pip-version-check requests cryptography playwright
+          python -m playwright install --with-deps chromium
+      - name: Decrypt cookie header
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin_profile_target'
+          obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-profile-target-727841')
+          Path('.private/cookie.txt').write_bytes(plain)
+          PY
+      - name: Enumerate profile until exact work and download highest stream
+        id: recover
+        continue-on-error: true
+        run: |
+          cat > /tmp/recover_profile.py <<'PY'
+          import hashlib, json, re, subprocess, sys, urllib.parse
+          from pathlib import Path
+          import requests
+          from playwright.sync_api import sync_playwright
+
+          AID='7278410935755148604'
+          SEC_UID='MS4wLjABAAAA2XKcRLgWFfEHQ8HPVKuA5W6VKgyaImM9tHPX_wDSVpk'
+          PROFILE=f'https://www.douyin.com/user/{SEC_UID}'
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+          raw_cookie=Path('.private/cookie.txt').read_text().strip()
+          out=Path('output'); rep=Path('report'); candidates_dir=Path('candidates')
+          out.mkdir(exist_ok=True); rep.mkdir(exist_ok=True); candidates_dir.mkdir(exist_ok=True)
+
+          def browser_cookies(raw):
+              result=[]
+              for part in raw.split(';'):
+                  if '=' not in part: continue
+                  name,value=part.strip().split('=',1)
+                  if name and not re.search(r'\s',name):
+                      result.append({'name':name,'value':value,'domain':'.douyin.com','path':'/','secure':True,'sameSite':'Lax'})
+              return result
+
+          def walk(value):
+              yield value
+              if isinstance(value,dict):
+                  for v in value.values(): yield from walk(v)
+              elif isinstance(value,list):
+                  for v in value: yield from walk(v)
+
+          def find_target(payload):
+              for node in walk(payload):
+                  if isinstance(node,dict) and str(node.get('aweme_id') or node.get('group_id') or node.get('item_id') or '')==AID and isinstance(node.get('video'),dict):
+                      return node
+              return None
+
+          target=None; response_count=0; post_count=0; seen_ids=set(); response_urls=[]
+          with sync_playwright() as pw:
+              browser=pw.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled'])
+              context=browser.new_context(user_agent=UA,locale='zh-CN',timezone_id='Asia/Shanghai',viewport={'width':1920,'height':1080},extra_http_headers={'Accept-Language':'zh-CN,zh;q=0.9'})
+              context.add_cookies(browser_cookies(raw_cookie))
+              page=context.new_page()
+              def on_response(resp):
+                  nonlocal target,response_count,post_count
+                  url=resp.url
+                  if 'douyin.com' not in url: return
+                  if '/aweme/v1/web/' not in url and 'json' not in (resp.headers.get('content-type') or '').lower(): return
+                  try: payload=resp.json()
+                  except Exception: return
+                  response_count+=1; response_urls.append(url)
+                  if 'aweme/post' in url: post_count+=1
+                  for node in walk(payload):
+                      if isinstance(node,dict):
+                          aid=str(node.get('aweme_id') or node.get('group_id') or node.get('item_id') or '')
+                          if aid.isdigit() and len(aid)>=15: seen_ids.add(aid)
+                  found=find_target(payload)
+                  if found: target=found
+              page.on('response',on_response)
+              page.goto(PROFILE,wait_until='domcontentloaded',timeout=120000)
+              page.wait_for_timeout(10000)
+              for loop in range(320):
+                  if target: break
+                  try:
+                      page.evaluate("""() => {
+                        const els=[...document.querySelectorAll('*')].filter(e=>{const s=getComputedStyle(e);return (s.overflowY==='auto'||s.overflowY==='scroll')&&e.scrollHeight>e.clientHeight+120&&e.clientHeight>250});
+                        els.sort((a,b)=>(b.scrollHeight*b.clientHeight)-(a.scrollHeight*a.clientHeight));
+                        if(els[0]){els[0].scrollTop=Math.min(els[0].scrollHeight,els[0].scrollTop+Math.max(1300,els[0].clientHeight*.95));els[0].dispatchEvent(new Event('scroll',{bubbles:true}));}else{window.scrollBy(0,1500);}
+                      }""")
+                  except Exception: pass
+                  page.mouse.wheel(0,1700)
+                  page.wait_for_timeout(650)
+              page.wait_for_timeout(3000)
+              browser.close()
+
+          base_report={'work_id':AID,'profile_url':PROFILE,'responses_seen':response_count,'post_responses':post_count,'unique_work_ids_seen':len(seen_ids),'target_found':bool(target),'response_urls':list(dict.fromkeys(response_urls))[-100:]}
+          if not target:
+              (rep/'report.json').write_text(json.dumps(base_report,ensure_ascii=False,indent=2))
+              raise SystemExit('target work was not found in profile pagination')
+
+          video=target.get('video') or {}
+          urls=[]
+          def add_addr(source,addr,meta):
+              if not isinstance(addr,dict): return
+              for url in addr.get('url_list') or []:
+                  if isinstance(url,str) and url.startswith('http'):
+                      urls.append({'source':source,'url':url,'declared_width':int(addr.get('width') or meta.get('width') or video.get('width') or 0),'declared_height':int(addr.get('height') or meta.get('height') or video.get('height') or 0),'declared_size':int(addr.get('data_size') or meta.get('data_size') or 0),'bit_rate':int(meta.get('bit_rate') or 0),'gear_name':meta.get('gear_name'),'quality_type':meta.get('quality_type')})
+          for index,br in enumerate(video.get('bit_rate') or []):
+              if not isinstance(br,dict): continue
+              for key in ('play_addr_265','play_addr_h264','play_addr'):
+                  add_addr(f'bit_rate[{index}].{key}',br.get(key),br)
+          for key in ('play_addr_265','play_addr_h264','play_addr'):
+              add_addr(f'video.{key}',video.get(key),video)
+          dedup=[]; seen=set()
+          for item in urls:
+              if item['url'] not in seen:
+                  seen.add(item['url']); dedup.append(item)
+          dedup.sort(key=lambda x:(x['declared_width']*x['declared_height'],x['bit_rate'],x['declared_size']),reverse=True)
+
+          def probe(path):
+              p=subprocess.run(['ffprobe','-v','error','-probesize','20M','-analyzeduration','20M','-show_entries','stream=codec_type,codec_name,width,height,duration,bit_rate','-show_entries','format=duration,size,bit_rate,format_name','-of','json',str(path)],capture_output=True,text=True,timeout=90)
+              if p.returncode: return None
+              return json.loads(p.stdout)
+
+          session=requests.Session(); headers={'User-Agent':UA,'Referer':PROFILE,'Cookie':raw_cookie,'Accept':'*/*'}
+          attempts=[]; valid=[]
+          for idx,item in enumerate(dedup):
+              path=candidates_dir/f'{idx:03d}.bin'; rec={k:v for k,v in item.items() if k!='url'}; rec['host']=urllib.parse.urlsplit(item['url']).netloc
+              try:
+                  with session.get(item['url'],headers=headers,stream=True,timeout=(20,150),allow_redirects=True) as r:
+                      rec['status']=r.status_code; rec['content_type']=r.headers.get('content-type',''); r.raise_for_status()
+                      with path.open('wb') as f:
+                          for chunk in r.iter_content(1024*1024):
+                              if chunk: f.write(chunk)
+                  rec['downloaded_size']=path.stat().st_size
+                  pr=probe(path); rec['probe']=pr
+                  if not pr: raise RuntimeError('ffprobe failed')
+                  streams=pr.get('streams') or []; videos=[s for s in streams if s.get('codec_type')=='video']; audios=[s for s in streams if s.get('codec_type')=='audio']
+                  if not videos: raise RuntimeError('no video stream')
+                  v=videos[0]; w=int(v.get('width') or 0); h=int(v.get('height') or 0); duration=float((pr.get('format') or {}).get('duration') or v.get('duration') or 0)
+                  rec.update({'width':w,'height':h,'duration':duration,'has_audio':bool(audios)})
+                  if 5.0<=duration<=10.0 and w*h>720*1280:
+                      valid.append((w*h,path,rec))
+              except Exception as e:
+                  rec['error']=type(e).__name__+': '+str(e)[:300]
+              attempts.append(rec)
+
+          report={**base_report,'target_found':True,'target_create_time':target.get('create_time'),'target_duration_ms':video.get('duration'),'declared_width':video.get('width'),'declared_height':video.get('height'),'candidate_count':len(dedup),'attempts':attempts,'valid_hq_count':len(valid)}
+          if not valid:
+              report['target_raw']=target
+              (rep/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+              raise SystemExit('profile target found but no downloadable HQ candidate passed verification')
+          _,src,chosen=max(valid,key=lambda x:(x[0],x[1].stat().st_size)); final=out/f'{AID}.mp4'
+          remux=subprocess.run(['ffmpeg','-y','-i',str(src),'-map','0:v:0','-map','0:a:0?','-c','copy','-movflags','+faststart',str(final)],capture_output=True,text=True,timeout=180)
+          if remux.returncode: raise SystemExit(remux.stderr[-1500:])
+          final_probe=probe(final)
+          subprocess.run(['ffmpeg','-v','error','-i',str(final),'-f','null','-'],check=True,timeout=180)
+          report.update({'chosen':chosen,'final_probe':final_probe,'final_size':final.stat().st_size,'sha256':hashlib.sha256(final.read_bytes()).hexdigest()})
+          (rep/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          print(json.dumps({'success':True,'seen':len(seen_ids),'source':chosen['source'],'width':chosen['width'],'height':chosen['height'],'duration':chosen['duration'],'has_audio':chosen['has_audio'],'size':final.stat().st_size},ensure_ascii=False))
+          PY
+          python /tmp/recover_profile.py
+      - name: Remove plaintext credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_profile_target"
+      - name: Upload verified target MP4
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-target-727841-video
+          path: output/7278410935755148604.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: warn
+      - name: Upload recovery report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-profile-target-727841-report
+          path: report/
+          retention-days: 3
+          if-no-files-found: error
+      - name: Require verified success
+        if: steps.recover.outcome != 'success'
+        run: exit 1
