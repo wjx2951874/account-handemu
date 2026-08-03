@@ -1,0 +1,35 @@
+name: Douyin 1080 candidate smoke test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/douyin-1080-smoke-bootstrap'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - name: Download candidate and verify
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          mkdir -p smoke
+          URL="$(cat tools/douyin_1080_candidate_url.txt)"
+          curl --fail --location --retry 3 --connect-timeout 20 --max-time 300 "$URL" -o smoke/7604091892406276261.mp4
+          ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height,bit_rate -show_entries format=duration,size,bit_rate -of json smoke/7604091892406276261.mp4 > smoke/ffprobe.json
+          cat smoke/ffprobe.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: douyin-1080-smoke-7604091892406276261
+          path: smoke/
+          retention-days: 3
+          compression-level: 0
