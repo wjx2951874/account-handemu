@@ -1,0 +1,178 @@
+name: Douyin HQ media capture 727841
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-hq-media-727841-bootstrap'
+permissions:
+  contents: write
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Publish ephemeral key
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          mkdir -p .douyin_media_exchange "$RUNNER_TEMP/douyin_media"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$RUNNER_TEMP/douyin_media/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/douyin_media/private.pem" -pubout -out .douyin_media_exchange/public_key.pem
+          git rm -f .github/douyin-hq-media-727841-bootstrap
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .douyin_media_exchange && git commit -m 'Publish media capture exchange key'
+          git push origin "HEAD:${HEAD_REF}"
+      - name: Wait for encrypted payload
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          for i in $(seq 1 180); do
+            git fetch origin "$HEAD_REF" --quiet
+            if git show "origin/${HEAD_REF}:.douyin_media_exchange/payload.json" > "$RUNNER_TEMP/douyin_media/payload.json" 2>/dev/null; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install requests cryptography playwright
+          python -m playwright install --with-deps chromium
+      - name: Decrypt cookies
+        run: |
+          mkdir -p .private
+          python - <<'PY'
+          import base64,json,os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes,serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          root=Path(os.environ['RUNNER_TEMP'])/'douyin_media'; obj=json.loads((root/'payload.json').read_text())
+          key=serialization.load_pem_private_key((root/'private.pem').read_bytes(),password=None)
+          aes=key.decrypt(base64.b64decode(obj['wrapped_key']),padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),algorithm=hashes.SHA256(),label=None))
+          plain=AESGCM(aes).decrypt(base64.b64decode(obj['nonce']),base64.b64decode(obj['ciphertext']),b'douyin-hq-media-727841')
+          Path('.private/cookie.txt').write_bytes(plain)
+          PY
+      - name: Capture and mux exact media tracks
+        id: capture
+        continue-on-error: true
+        run: |
+          cat > /tmp/capture.py <<'PY'
+          import hashlib,json,subprocess,sys,time,urllib.parse
+          from pathlib import Path
+          import requests
+          from playwright.sync_api import sync_playwright
+          AID='7278410935755148604'; VID='v0d00fg10000ck11oqjc77ubr18ss6gg'; TARGET_DUR=7.15
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+          cookie=Path('.private/cookie.txt').read_text().strip(); out=Path('hq_output'); rep=Path('hq_report'); out.mkdir(exist_ok=True); rep.mkdir(exist_ok=True)
+          def parse_cookies(s):
+            r=[]
+            for part in s.split(';'):
+              if '=' not in part: continue
+              k,v=part.strip().split('=',1)
+              if k and all(ch not in k for ch in ' \t\r\n'): r.append({'name':k,'value':v,'domain':'.douyin.com','path':'/','secure':True})
+            return r
+          def probe(p):
+            q=subprocess.run(['ffprobe','-v','error','-show_entries','stream=index,codec_type,codec_name,width,height,bit_rate','-show_entries','format=duration,size,bit_rate','-of','json',str(p)],capture_output=True,text=True,timeout=60)
+            if q.returncode:return None
+            o=json.loads(q.stdout); f=o.get('format') or {}; o['duration']=float(f.get('duration') or 0); o['size']=int(f.get('size') or p.stat().st_size); return o
+          urls=[]
+          ratios=['origin','1080p','1080','2k','4k']
+          for host in ['www.douyin.com','aweme.snssdk.com','api.amemv.com','www.iesdouyin.com']:
+            for ratio in ratios: urls.append(f'https://{host}/aweme/v1/play/?video_id={VID}&ratio={ratio}&line=0&is_play_url=1')
+          captured=[]
+          with sync_playwright() as pw:
+            b=pw.chromium.launch(headless=True,args=['--disable-blink-features=AutomationControlled','--autoplay-policy=no-user-gesture-required'])
+            c=b.new_context(user_agent=UA,locale='zh-CN',viewport={'width':1440,'height':2560},device_scale_factor=2)
+            c.add_cookies(parse_cookies(cookie)); p=c.new_page()
+            def collect(u):
+              low=u.lower()
+              if any(x in low for x in ['media-video','media-audio','mime_type=video','/video/tos/']): captured.append(u)
+            p.on('request',lambda r: collect(r.url)); p.on('response',lambda r: collect(r.url))
+            for page_url in [f'https://www.douyin.com/video/{AID}',f'https://www.douyin.com/jingxuan?modal_id={AID}']:
+              try:
+                p.goto(page_url,wait_until='domcontentloaded',timeout=90000); p.wait_for_timeout(6000)
+                p.evaluate("() => document.querySelectorAll('video').forEach(v => {v.muted=true; v.play().catch(()=>{})})")
+                p.wait_for_timeout(8000)
+                captured += p.evaluate("() => performance.getEntriesByType('resource').map(x=>x.name)")
+              except Exception: pass
+            b.close()
+          urls += captured
+          seen=set(); urls=[u for u in urls if isinstance(u,str) and u.startswith('http') and not (u in seen or seen.add(u))]
+          sess=requests.Session(); files=[]; errors=[]
+          headers={'User-Agent':UA,'Referer':'https://www.douyin.com/','Origin':'https://www.douyin.com','Cookie':cookie,'Accept':'*/*'}
+          for i,u in enumerate(urls):
+            path=Path('/tmp')/f'media_{i:03d}.mp4'
+            try:
+              with sess.get(u,headers=headers,stream=True,timeout=(15,120),allow_redirects=True) as r:
+                r.raise_for_status()
+                with path.open('wb') as f:
+                  for chunk in r.iter_content(1024*1024):
+                    if chunk:f.write(chunk)
+              if path.stat().st_size<1000: raise RuntimeError('too small')
+              pr=probe(path)
+              if not pr: raise RuntimeError('ffprobe failed')
+              files.append({'url':u,'path':str(path),'probe':pr})
+            except Exception as e: errors.append({'host':urllib.parse.urlsplit(u).netloc,'path':urllib.parse.urlsplit(u).path[-100:],'error':type(e).__name__+': '+str(e)[:300]})
+          videos=[]; audios=[]; combined=[]
+          for f in files:
+            streams=f['probe'].get('streams') or []
+            vs=[s for s in streams if s.get('codec_type')=='video']; aus=[s for s in streams if s.get('codec_type')=='audio']
+            dur=f['probe']['duration']
+            if abs(dur-TARGET_DUR)>1.0: continue
+            if vs:
+              v=vs[0]; f['width']=int(v.get('width') or 0); f['height']=int(v.get('height') or 0)
+              if f['width']*f['height']>720*1280:
+                (combined if aus else videos).append(f)
+            elif aus: audios.append(f)
+          final=out/f'{AID}.mp4'; chosen={}
+          if combined:
+            c=max(combined,key=lambda x:(x['width']*x['height'],x['probe'].get('size',0))); Path(c['path']).replace(final); chosen={'mode':'combined','video':c}
+          elif videos:
+            v=max(videos,key=lambda x:(x['width']*x['height'],x['probe'].get('size',0)))
+            if audios:
+              a=min(audios,key=lambda x:abs(x['probe']['duration']-v['probe']['duration']))
+              q=subprocess.run(['ffmpeg','-y','-i',v['path'],'-i',a['path'],'-map','0:v:0','-map','1:a:0','-c','copy',str(final)],capture_output=True,text=True,timeout=120)
+              if q.returncode: raise RuntimeError(q.stderr[-1000:])
+              chosen={'mode':'muxed','video':v,'audio':a}
+            else:
+              Path(v['path']).replace(final); chosen={'mode':'video_only','video':v}
+          result={'candidate_url_count':len(urls),'downloaded_count':len(files),'video_candidates':len(videos),'combined_candidates':len(combined),'audio_candidates':len(audios),'errors':errors,'chosen_mode':chosen.get('mode')}
+          if final.exists():
+            pr=probe(final); result.update(success=True,probe=pr,sha256=hashlib.sha256(final.read_bytes()).hexdigest(),size=final.stat().st_size)
+            vs=[s for s in pr.get('streams',[]) if s.get('codec_type')=='video']; result['width']=int(vs[0].get('width') or 0) if vs else 0; result['height']=int(vs[0].get('height') or 0) if vs else 0
+            if result['width']*result['height']<=720*1280: result['success']=False; result['error']='final resolution not higher'
+          else: result.update(success=False,error='no matching 1080 media track')
+          (rep/'报告.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)); print(json.dumps({k:result.get(k) for k in ['success','width','height','chosen_mode','candidate_url_count','downloaded_count']},ensure_ascii=False))
+          if not result['success']: sys.exit(2)
+          PY
+          python /tmp/capture.py
+      - name: Remove credentials
+        if: always()
+        run: rm -rf .private "$RUNNER_TEMP/douyin_media"
+      - name: Upload captured video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-media-727841-video
+          path: hq_output/*.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: warn
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-media-727841-report
+          path: hq_report/
+          retention-days: 3
+          if-no-files-found: error
+      - name: Require success
+        if: steps.capture.outcome != 'success'
+        run: exit 1
