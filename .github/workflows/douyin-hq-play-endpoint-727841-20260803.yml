@@ -1,0 +1,100 @@
+name: Douyin play endpoint recovery 727841
+on:
+  pull_request:
+    paths:
+      - '.github/douyin-hq-play-endpoint-727841-bootstrap'
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install --disable-pip-version-check requests
+      - name: Resolve fresh endpoint and verify exact work
+        run: |
+          cat > /tmp/recover.py <<'PY'
+          import hashlib, json, subprocess, urllib.parse
+          from pathlib import Path
+          import requests
+
+          VID='v0d00fg10000ck11oqjc77ubr18ss6gg'
+          AID='7278410935755148604'
+          FILE_ID='16c1c08f4a4147ab824440bd353f8b83'
+          SIGN='706924685b45b7b4d3ef7147f0c5261c'
+          UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36'
+          hosts=['www.douyin.com','www.iesdouyin.com','aweme.snssdk.com','api.amemv.com']
+          ratios=['1080p','1080','origin','highest','2k']
+          urls=[]
+          for host in hosts:
+              for ratio in ratios:
+                  urls.append(f'https://{host}/aweme/v1/play/?video_id={VID}&ratio={ratio}&line=0&is_play_url=1&source=PackSourceEnum_PUBLISH')
+              urls.append(f'https://{host}/aweme/v1/play/?video_id={VID}&file_id={FILE_ID}&sign={SIGN}&line=0&ply_type=3&is_play_url=1&source=PackSourceEnum_PUBLISH')
+          out=Path('output'); rep=Path('report'); cand=Path('candidates')
+          out.mkdir(exist_ok=True); rep.mkdir(exist_ok=True); cand.mkdir(exist_ok=True)
+          session=requests.Session()
+          headers={'User-Agent':UA,'Referer':f'https://www.douyin.com/video/{AID}','Accept':'*/*'}
+          records=[]; valid=[]
+          def probe(path):
+              p=subprocess.run(['ffprobe','-v','error','-show_entries','stream=codec_type,codec_name,width,height,duration,bit_rate','-show_entries','format=duration,size,bit_rate,format_name','-of','json',str(path)],capture_output=True,text=True,timeout=60)
+              if p.returncode: return None
+              return json.loads(p.stdout)
+          for i,url in enumerate(urls):
+              path=cand/f'{i:02d}.bin'
+              rec={'index':i,'host':urllib.parse.urlsplit(url).netloc,'query':urllib.parse.urlsplit(url).query}
+              try:
+                  with session.get(url,headers=headers,stream=True,timeout=(15,90),allow_redirects=True) as r:
+                      rec['status']=r.status_code; rec['final_host']=urllib.parse.urlsplit(r.url).netloc; rec['content_type']=r.headers.get('content-type','')
+                      r.raise_for_status()
+                      with path.open('wb') as f:
+                          for chunk in r.iter_content(1024*1024):
+                              if chunk: f.write(chunk)
+                  rec['size']=path.stat().st_size
+                  pr=probe(path); rec['probe']=pr
+                  if not pr: raise RuntimeError('ffprobe failed')
+                  streams=pr.get('streams') or []
+                  videos=[s for s in streams if s.get('codec_type')=='video']
+                  if not videos: raise RuntimeError('no video stream')
+                  v=videos[0]; w=int(v.get('width') or 0); h=int(v.get('height') or 0)
+                  duration=float((pr.get('format') or {}).get('duration') or v.get('duration') or 0)
+                  rec.update({'width':w,'height':h,'duration':duration})
+                  if 5.0 <= duration <= 10.0 and w*h > 720*1280:
+                      valid.append((w*h,path,rec))
+              except Exception as e:
+                  rec['error']=type(e).__name__+': '+str(e)[:250]
+              records.append(rec)
+          report={'video_id':VID,'work_id':AID,'attempts':records,'valid_count':len(valid)}
+          if not valid:
+              (rep/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+              raise SystemExit('no exact high-resolution candidate')
+          _,src,chosen=max(valid,key=lambda x:(x[0],x[1].stat().st_size))
+          final=out/f'{AID}.mp4'
+          remux=subprocess.run(['ffmpeg','-y','-i',str(src),'-map','0:v:0','-map','0:a:0?','-c','copy','-movflags','+faststart',str(final)],capture_output=True,text=True,timeout=120)
+          if remux.returncode: raise SystemExit(remux.stderr[-1000:])
+          final_probe=probe(final)
+          report.update({'chosen':chosen,'final_probe':final_probe,'size':final.stat().st_size,'sha256':hashlib.sha256(final.read_bytes()).hexdigest()})
+          (rep/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          subprocess.run(['ffmpeg','-v','error','-i',str(final),'-f','null','-'],check=True,timeout=120)
+          PY
+          python /tmp/recover.py
+      - name: Upload exact verified MP4
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-play-endpoint-727841-video
+          path: output/7278410935755148604.mp4
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload endpoint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-hq-play-endpoint-727841-report
+          path: report/
+          retention-days: 3
+          if-no-files-found: warn
